@@ -32,6 +32,7 @@ Faysk/inalpha
 | `06-implementation-log.md` | Chronological implementation/debugging log |
 | `07-before-after-results.md` | Baseline vs fixed benchmark comparison |
 | `08-pr-draft.md` | Draft upstream PR description/checklist |
+| `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
 ## Working method
 
