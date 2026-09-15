@@ -1,16 +1,26 @@
 # Draft upstream PR — Issue #107
 
-> Working draft only. Final PR should be opened from `Faysk:fix/data-service-saturation` to `mirror29:main` (or `staging` if the maintainer requests it). This notes branch must not be the PR source.
+> Working draft only. Final PR should be opened from `Faysk:fix/data-service-saturation` to `mirror29:main` for a focused low-risk data-service fix, or to `staging` if the maintainer requests it / scope expands into high-risk paths. This notes branch must never be the PR source.
 
 ---
 
 ## Proposed title
 
+Do not lock the title until the measured root cause is known.
+
+Possible data-local examples:
+
 ```text
-fix(data): bound sustained backfill load
+fix(data): prevent backfill load from starving data-service
 ```
 
-Final title may change depending on the actual measured root cause and implementation.
+or, if the measured fix is specifically DB lifetime:
+
+```text
+fix(data): release DB capacity during backfill provider waits
+```
+
+Avoid a title that claims admission control if the actual fix is different.
 
 ---
 
@@ -18,10 +28,10 @@ Final title may change depending on the actual measured root cause and implement
 
 TBD after implementation.
 
-Suggested final shape:
+Final shape:
 
 ```text
-This PR addresses sustained data-service saturation under overlapping factor/backfill/live-runner workloads by <actual measured fix>. It adds deterministic regression coverage and documents before/after measurements against the same mixed-load reproduction.
+This PR addresses sustained data-service saturation under the representative #107 mixed workload by <actual measured fix>. The change is backed by deterministic regression coverage and before/after measurements using the same topology and workload.
 
 Fixes #107
 ```
@@ -30,24 +40,33 @@ Fixes #107
 
 ## Scope
 
-- Affected service: `services/data` (plus `services/factor` only if required by measured caller semantics)
-- Current phase: D-12+ / N/A as appropriate
-- Type: `fix` / `test` / possibly `perf`
+Fill from actual change:
+
+```text
+Affected service: services/data
+Additional service(s), only if required: TBD
+Current Phase: D-12+ / N/A as appropriate
+Type: fix / test / perf as appropriate
+Target branch: main or staging (aligned with maintainer if scope is non-local)
+```
 
 ---
 
 ## Problem / baseline
 
 ```text
-Commit:
-Reproduction:
-Observed failure:
+Baseline commit:
+Data worker topology:
+DB pool configuration:
+Exact reproduction:
+Observed first saturated resource:
+Baseline DATA_SERVICE_UNREACHABLE count:
 Baseline p95:
-Baseline error count:
-Root cause evidence:
+Refresh no-progress count:
+Root-cause evidence:
 ```
 
-Keep this factual. Do not claim a cause that was not reproduced/measured.
+Important: distinguish HTTP success from actual refresh progress.
 
 ---
 
@@ -56,16 +75,22 @@ Keep this factual. Do not claim a cause that was not reproduced/measured.
 ```text
 Actual implementation summary:
 Why this layer is the correct boundary:
+DB connection lifetime before/after:
+Admission/concurrency behavior, if any:
 Configuration/defaults:
-Backpressure/error semantics:
+Backpressure/error semantics, if any:
+Caller compatibility impact:
 Freshness behavior:
 ```
+
+If a semaphore is used, state explicitly whether it is per worker/process and what production worker count means for aggregate capacity.
 
 ---
 
 ## Why this approach
 
 ```text
+Why the measured bottleneck required this change:
 Why simpler alternatives were insufficient:
 Why more complex alternatives were deferred:
 ```
@@ -73,11 +98,12 @@ Why more complex alternatives were deferred:
 Potential deferred items unless measurements require them:
 
 - per-provider capacity isolation,
-- same-key single-flight,
+- generic data-side single-flight,
 - factor HTTP connection pooling,
 - live-runner staggering,
 - distributed coordination,
-- new telemetry infrastructure.
+- new telemetry infrastructure,
+- unrelated yfinance empty-result semantics (#74).
 
 ---
 
@@ -85,33 +111,43 @@ Potential deferred items unless measurements require them:
 
 | Metric | Before | After |
 |---|---:|---:|
-| success rate | TBD | TBD |
-| `DATA_SERVICE_UNREACHABLE` | TBD | TBD |
+| `DATA_SERVICE_UNREACHABLE` | TBD | **0 target** |
+| HTTP success rate | TBD | TBD |
+| refreshes with real progress | TBD | TBD |
+| zero/no-progress backfills | TBD | TBD |
 | p50 | TBD | TBD |
 | p95 | TBD | TBD |
 | p99 | TBD | TBD |
+| DB pool pressure | TBD | TBD |
 | peak expensive in-flight ops | TBD | TBD |
+| intentional backpressure | N/A | TBD |
 
-Add the exact mixed-load scenario used for both sides.
+Add exact mixed-load scenario, worker topology, repeat count, and variability.
 
 ---
 
 ## Correctness / business invariants
 
-Explicitly state:
+Explicitly state what was verified:
 
 - financial freshness semantics were preserved,
-- historical/as-of behavior was not changed,
-- provider failure remains distinguishable from valid empty data,
+- historical/as-of behavior was not weakened,
+- overload does not silently become stale current success,
+- provider/refresh failures were not counted as success merely because HTTP returned 200,
 - auth/owner boundaries remain unchanged,
 - no direct LLM/order-path constraint was touched,
+- service import boundaries remain unchanged,
 - no private data or production secrets are included.
+
+If research/dashboard best-effort behavior is relevant, state that it remains intentionally unchanged.
 
 ---
 
 ## Testing
 
 Fill with actual commands/results.
+
+Minimum repository checks expected for a data-local change:
 
 ```bash
 bash scripts/check-consistency.sh
@@ -120,15 +156,22 @@ cd services/data
 uv run ruff check .
 uv run mypy .
 uv run pytest
+```
 
-# if factor touched
-cd ../factor
+If factor is touched:
+
+```bash
+cd services/factor
 uv run ruff check .
 uv run mypy .
 uv run pytest
 ```
 
-Also include the deterministic load/regression harness command.
+Also run the upstream-required local CI red-line commands from `CONTRIBUTING.md` before the final push, even when our code did not touch those modules.
+
+Include the deterministic regression test and contributor benchmark command/result in the PR description.
+
+The load harness itself does **not** need to be committed upstream unless it is a generally useful project artifact.
 
 ---
 
@@ -138,35 +181,44 @@ Also include the deterministic load/regression harness command.
 - [ ] One logical change per commit.
 - [ ] PR title/body in English.
 - [ ] `Fixes #107` present.
+- [ ] Target branch matches project risk rules / maintainer alignment.
 - [ ] `bash scripts/check-consistency.sh` passes.
+- [ ] Upstream-required local CI red-line commands pass.
 - [ ] Relevant service Ruff passes.
 - [ ] Relevant service pytest passes.
 - [ ] mypy output reviewed.
 - [ ] No unnecessary dependency added.
 - [ ] No `services/_shared/`, `.mastra/`, or private-doc changes unless explicitly agreed.
+- [ ] DB connection/admission lifetime reviewed if backfill concurrency changed.
+- [ ] Per-worker vs service-global semantics documented honestly.
 - [ ] Freshness behavior verified.
-- [ ] Before/after evidence uses same workload.
-- [ ] No secrets/private data in commits, logs, screenshots, or fixtures.
+- [ ] Before/after evidence uses the same workload/topology.
+- [ ] HTTP 200/no-progress refreshes are not miscounted as success.
+- [ ] No secrets/private data in commits, logs, screenshots, fixtures, or notes copied into the PR.
 
 ---
 
-## Potential labels
+## Labels
 
-Existing project labels likely relevant to this work:
+Issue #107 currently has no label attached. Existing repository labels that may be relevant include:
 
 ```text
 data
 enhancement
 ```
 
-Do not create new upstream labels just for this PR. Maintainer can apply/adjust labels.
+Do not create or force labels merely for this PR. The maintainer can classify/adjust them.
 
 ---
 
 ## Review notes / questions for maintainer
 
-```text
-TBD
-```
+Keep this short at PR time.
 
-Only include questions that remain genuinely unresolved at PR time.
+Possible items only if still unresolved:
+
+```text
+- deployed data worker topology differs from repo compose
+- target p95 / target concurrency envelope
+- target branch if scope expanded beyond data-service local fix
+```
