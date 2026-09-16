@@ -52,6 +52,24 @@ checkout DB connection
 
 This confirms the **lifetime behavior**. It does **not** yet prove that DB-pool pressure is the root cause of #107.
 
+### Current backfill is not one atomic request transaction
+
+`insert_bars()` explicitly commits every persisted batch.
+
+So a multi-batch backfill already has durable per-batch boundaries. Candidate A would change connection lease duration, not split one request-wide transaction that currently exists.
+
+The first `latest_bar_ts()` SELECT does start a transaction under Psycopg's default `autocommit=False`; current code can then await the first provider call while that read-only transaction and the pool lease remain open.
+
+After a batch commit, later provider waits may no longer have an active transaction, but the connection remains reserved to the route until request exit.
+
+Primary issue wording therefore remains:
+
+```text
+pool slot retained across external I/O
+```
+
+not merely “idle in transaction.”
+
 ### Pool size and health path
 
 The shared DB pool defaults to:
@@ -66,7 +84,7 @@ timeout = 30s
 
 `GET /health` itself depends on `DBConn` before running its `SELECT 1`. Therefore a request can be unable to enter the health handler while waiting for a saturated pool.
 
-Current production compose checks `/health` with a **2-second Docker healthcheck timeout** and runs `data-service` with **2 workers**.
+Current production compose checks `/health` with a **2-second urllib timeout** / 3-second Docker healthcheck timeout and runs `data-service` with **2 workers**.
 
 This creates an important operational hypothesis:
 
@@ -100,7 +118,7 @@ GET /bars accepted by data-service
 → eventually DATA_SERVICE_UNREACHABLE
 ```
 
-This is now hypothesis **H1b**. It is stronger than the original generic "data-service is saturated" theory because every step is supported by current code, but it still needs runtime reproduction.
+This is hypothesis **H1b**. It is stronger than the original generic “data-service is saturated” theory because every step is supported by current code, but it still needs runtime reproduction.
 
 Do not yet claim that timed-out server work continues after client disconnect; cancellation behavior must be observed separately.
 
@@ -133,6 +151,35 @@ factor macro gather (~18)
 → each data request obtains DBConn before external FRED I/O
 ```
 
+### Cold macro cache can stampede
+
+The factor macro cache is module-level and therefore shared across request-scoped `FactorEngine` instances in the current one-worker factor deployment.
+
+But `_fetch_macro_series()` currently does:
+
+```text
+cache get
+→ await _fetch_df(... fresh=True)
+→ cache put
+```
+
+with no per-key in-flight coalescing.
+
+Therefore several concurrent cold requests for the same macro/date key can all miss before the first result is cached and each launch duplicate factor→data work.
+
+The cache is known to work **after population**; existing tests cover that sequential hit path. They do not cover simultaneous same-key misses.
+
+This is now hypothesis **H8**:
+
+```text
+cold concurrent live factor calls
+→ same macro keys miss simultaneously
+→ duplicate same-key FRED/backfill work
+→ factor fan-out multiplier larger than “18 series once”
+```
+
+A pure factor-unit diagnostic has been prepared and uses no data-service/FRED network.
+
 ### Factor client lifetime
 
 `get_engine()` creates a new `FactorEngine` for each factor request.
@@ -164,6 +211,21 @@ So a future HTTP `429` / `503` from `/backfill/bars` would not automatically ent
 
 This is an important compatibility constraint for any admission-control design.
 
+### Adjacent data-service DB lease findings
+
+`/backfill/bars` is not the only data path where request-scoped DB capacity can overlap external I/O.
+
+`GET /ticker?fresh=true` declares `db: DBConn`, but the fresh branch does not use DB at all; it directly awaits the venue connector's external ticker call. A fresh ticker can therefore reserve a DB connection unnecessarily during provider I/O.
+
+`POST /constituents/snapshot` and the background constituent scheduler also keep a DB connection while awaiting an external constituent fetch before persistence.
+
+These are **adjacent findings, not automatic #107 scope**:
+
+- fresh ticker can overlap real trading/order activity and should be measured if it appears in the representative mixed workload;
+- constituent snapshots are low-frequency/config-dependent and should stay out of #107 unless evidence says otherwise.
+
+Do not broaden the first PR just because the same resource-ordering smell exists elsewhere.
+
 ### Other caller behavior
 
 Current caller behavior differs by component:
@@ -182,16 +244,20 @@ Therefore a new busy/backpressure response cannot be evaluated only at the data-
 ### Confirmed
 
 - route-scoped `DBConn` holds a pool connection across the current `/backfill/bars` handler lifetime;
+- current backfill persists/commits per batch rather than as one request-wide transaction;
 - pool default is 10 connections per process with 30s checkout timeout;
 - `/health` also requires `DBConn` before its handler executes;
-- production compose currently configures two data workers and a 2s `/health` probe timeout;
+- production compose currently configures two data workers and a short `/health` probe timeout;
 - yfinance serializes `history()` calls per process;
 - FRED calls synchronous provider code through `asyncio.to_thread` without a data-service admission gate;
 - factor creates short-lived `httpx.AsyncClient` instances through `_fetch_df()`;
 - factor `GET /bars` timeout is also 30s and request-level failures can be retried up to 3 times;
 - live macro factor fetches can fan out concurrently;
+- macro cache population currently has no same-key in-flight coalescing;
 - dashboard already coalesces same-key chart backfills;
-- factor/research best-effort backfill semantics differ from orchestration's explicit HTTP-error semantics.
+- factor/research best-effort backfill semantics differ from orchestration's explicit HTTP-error semantics;
+- fresh ticker currently reserves route-level DB capacity despite not using DB in its fresh branch;
+- constituent snapshot fetch can also retain DB capacity across external provider I/O.
 
 ### Still hypotheses
 
@@ -201,16 +267,18 @@ Therefore a new busy/backpressure response cannot be evaluated only at the data-
 - a backfill admission gate is necessary;
 - connection pooling in factor materially affects p95/error rate;
 - cross-service duplicate backfills are frequent enough to justify data-side single-flight;
+- cold macro same-key duplication is frequent/material enough to justify factor-side single-flight;
 - live-runner synchronization is still a significant contributor after current mitigations;
+- fresh ticker overlap materially contributes to the #107 workload;
 - client disconnect leaves timed-out server work alive long enough to amplify pressure.
 
 Do not write PR language that treats any item in the second list as proven until runtime evidence exists.
 
 ---
 
-## 4. Deterministic diagnostic prepared
+## 4. Deterministic diagnostics prepared
 
-A contributor-only draft test now exists at:
+### Backfill / DB pool
 
 ```text
 .faysk-notes/tools/test_backfill_pool_pressure_draft.py
@@ -218,7 +286,7 @@ A contributor-only draft test now exists at:
 
 It uses a fully fake connector that blocks provider I/O and performs **no external network calls**.
 
-The test has a control and a pressure case:
+Control/pressure cases:
 
 ```text
 9 blocked backfills
@@ -227,12 +295,31 @@ The test has a control and a pressure case:
 
 10 blocked backfills
 → 10/10 DB pool slots occupied
+→ /openapi.json should remain responsive
 → /health should remain blocked until the fake provider releases
 ```
 
 This does not by itself reproduce the full #107 mixed workload. Its purpose is narrower: prove whether current route/resource ordering can starve an unrelated DB-backed endpoint exactly as static inspection predicts.
 
-When run locally, preserve the result even if it disproves H1.
+### Macro cache stampede
+
+```text
+.faysk-notes/tools/test_macro_cache_stampede_draft.py
+```
+
+Pure factor-unit diagnostic, no external network:
+
+```text
+sequential same-key macro requests
+→ expected 1 fetch total after cache population
+
+6 simultaneous cold same-key macro requests
+→ expected current-main behavior: 6 independent fetches enter before cache put
+```
+
+This proves structural duplicate in-flight work if observed, but not production materiality.
+
+When run locally, preserve results even if they disprove our hypotheses.
 
 ---
 
@@ -244,15 +331,17 @@ Once the contributor machine has the repository locally:
 1. verify exact upstream commit
 2. start unmodified stack / test DB
 3. run existing data/factor tests
-4. copy/run the contributor-only pool-pressure diagnostic
-5. record whether 9-vs-10 behavior matches H1
-6. establish one-worker service-level diagnostic run
-7. reproduce slow-provider/backfill pressure over real HTTP
-8. inspect DB-pool behavior and request latency
-9. repeat with production-like data WORKERS=2
-10. exercise live factor + macro fan-out
-11. add runner-like traffic only after isolated scenarios are understood
-12. record baseline before any production change
+4. run pure factor macro-stampede diagnostic
+5. copy/run the contributor-only DB pool-pressure diagnostic
+6. record whether 9-vs-10 behavior matches H1
+7. establish one-worker service-level diagnostic run
+8. reproduce slow-provider/backfill pressure over real HTTP
+9. inspect DB-pool behavior and request latency
+10. repeat with production-like data WORKERS=2
+11. exercise live factor + macro fan-out (cold single, cold concurrent, warm)
+12. add runner/resume-like traffic only after isolated scenarios are understood
+13. include fresh ticker only if representative workflow actually reaches it materially
+14. record baseline before any production change
 ```
 
 ---
@@ -263,10 +352,13 @@ After the initial deterministic reproduction, choose **one** first intervention 
 
 ```text
 DB connection retained across slow I/O is material
-→ investigate shortening DB checkout lifetime
+→ investigate shortening DB checkout lifetime (Candidate A)
 
 expensive provider work itself saturates first
-→ investigate bounded admission before scarce-resource checkout
+→ investigate bounded admission before scarce-resource checkout (Candidate C)
+
+cold macro duplicate same-key work is material
+→ investigate factor-side single-flight and/or bounded fan-out only after primary data behavior is understood
 
 caller connection churn is material
 → investigate safe HTTP connection reuse
@@ -274,6 +366,8 @@ caller connection churn is material
 none of the above explains failure
 → keep investigating; do not force the planned solution
 ```
+
+Candidate A remains the least contract-changing first fix **if H1 is measured**. H8 does not automatically mean factor should be changed in the same PR.
 
 ---
 
