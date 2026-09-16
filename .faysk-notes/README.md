@@ -63,13 +63,14 @@ Faysk/inalpha
 | `37-existing-db-http-separation-precedent.md` | Existing live-runner M-1 rule and implementation: short DB read → external HTTP → short DB write, directly matching Candidate A's intended resource ordering |
 | `38-runner-poll-harness.md` | Live-runner-like fresh polling harness, aligned-vs-stagger control and in-flight DB/provider sampling |
 | `39-mixed-workload-harness.md` | Combined cold factor/macro + runner polling + health/openapi workload used for the issue-level before/after decision gate |
-| `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus contributor-diagnostic materialization and cleanup workflow for Windows/WSL/Linux |
+| `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus contributor-diagnostic/safety-helper materialization and cleanup workflow for Windows/WSL/Linux |
 | `41-benchmark-db-state-determinism.md` | Dedicated resettable `inalpha_issue107` database and factor-cache/DB-cache discipline so cold/warm and before/after runs are comparable |
 | `42-runtime-readiness-static-validation.md` | Final static check that diagnostics match current pytest, auth, schemas, venue/timeframe support, environment loading and Candidate A correctness caveats before runtime |
 | `43-candidate-a-overlap-write-correctness.md` | Explicit guard against overstating UPSERT safety; same-key mutable-candle completion inversion is tested only if H4 proves material overlap |
 | `44-runtime-execution-manifest.md` | Stable A–N runtime scenario names, exact controlled inputs, result filenames and baseline→candidate comparison discipline |
 | `45-evidence-capture-helper.md` | Windows evidence-session workflow that records revision/tool/host metadata outside the Git working tree without dumping secrets |
 | `46-data-regression-ci-enforcement-gap.md` | Current CI runs data Ruff/mypy but not data pytest; records options without automatically broadening #107 into a CI-policy change |
+| `47-benchmark-reset-safety.md` | Fail-closed dedicated-DB reset workflow so cold-state benchmarks cannot silently truncate the ordinary development database |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
@@ -83,6 +84,8 @@ Faysk/inalpha
 | `tools/prepare_issue107_local.ps1` | Windows PowerShell preflight/materialization helper; refuses dirty/drifted/tracked destinations and never applies production changes |
 | `tools/prepare_issue107_local.sh` | Bash/WSL/Linux equivalent of the safe preflight/materialization helper |
 | `tools/issue107_capture_env.ps1` | Creates a local baseline/candidate evidence directory and records non-secret revision/tool/host metadata; never uploads results |
+| `tools/issue107_benchmark_db.ps1` | PowerShell verify/reset helper hard-coded to the dedicated `inalpha_issue107` DB; resets only `public.bars` after safety checks |
+| `tools/issue107_benchmark_db.sh` | Bash/WSL equivalent of the dedicated benchmark DB verify/reset helper |
 | `tools/candidate_a_narrow_db_lease.patch` | Unapplied patch draft for Candidate A; wording now explicitly keeps same-key completion ordering as a separate correctness question |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
