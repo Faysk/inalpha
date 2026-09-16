@@ -79,6 +79,7 @@ Faysk/inalpha
 | `53-candidate-a-current-main-revalidation.md` | Revalidates the unapplied narrow DB-lease candidate against current route/storage/shared-DB/test semantics and records what would and would not change |
 | `54-sustained-child-task-cancellation.md` | Acceptance-harness guard that explicitly cancels/drains spawned request tasks so settle-timeout evidence is not contaminated by orphan local load |
 | `55-pre-runtime-freeze.md` | Static-preparation freeze and cross-document handoff: runtime is now the next evidence gate unless upstream/scope/tooling materially changes |
+| `56-local-environment-bootstrap.md` | Exact no-load Windows/WSL bootstrap for toolchain, infra, dedicated benchmark DB, migrations and handoff into Stage A |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A property regression with pool=2, four simultaneous provider waits and background scheduler isolation |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
