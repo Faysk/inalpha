@@ -1,0 +1,52 @@
+diff --git a/services/data/src/inalpha_data/api/backfill.py b/services/data/src/inalpha_data/api/backfill.py
+index d30a6a0..0000000 100644
+--- a/services/data/src/inalpha_data/api/backfill.py
++++ b/services/data/src/inalpha_data/api/backfill.py
+@@ -9,7 +9,7 @@ from typing import Annotated
+ from fastapi import APIRouter, Depends
+ from inalpha_shared import get_logger
+ from inalpha_shared.auth import User, get_current_user
+-from inalpha_shared.db import DBConn
++from inalpha_shared.db import get_conn
+ from inalpha_shared.errors import InalphaError, ValidationError
+ 
+ from ..connectors import Connector, get_connector_for_venue, list_registered_venues
+@@ -68,7 +68,6 @@ class BarsUpstreamUnavailableError(InalphaError):
+ @router.post("/backfill/bars", response_model=BackfillResponse)
+ async def backfill_bars(
+     req: BackfillRequest,
+-    db: DBConn,
+     _user: Annotated[User, Depends(get_current_user)],
+ ) -> BackfillResponse:
+@@ -141,9 +140,15 @@ async def backfill_bars(
+     # 起点取已缓存 max(ts)（重拉最后一根，覆盖落库时仍未收盘的半根 candle），
+     # 但不早于请求的 from_ts；空缓存则从 from_ts 全量。
+     # 注：仅按 max(ts) 续拉，中间空洞（非连续缓存，罕见）不会回补；需要时显式重拉窗口。
+-    cached_latest = await latest_bar_ts(
+-        db, effective_venue, effective_symbol, req.timeframe, upto=req.to_ts
+-    )
++    # DB lease 只覆盖本地查询；外部 provider I/O 不应长期占住 pool connection。
++    async with get_conn() as conn:
++        cached_latest = await latest_bar_ts(
++            conn,
++            effective_venue,
++            effective_symbol,
++            req.timeframe,
++            upto=req.to_ts,
++        )
+     if cached_latest is not None and cached_latest > effective_from_ts:
+         cursor = cached_latest
+         _logger.info(
+@@ -198,7 +203,10 @@ async def backfill_bars(
+         bars = [b for b in bars if b[0] <= req.to_ts]
+         if not bars:
+             break
+ 
+-        n = await insert_bars(db, effective_venue, effective_symbol, req.timeframe, bars)
++        # Persist each completed provider batch with a short DB lease. insert_bars() remains
++        # the transaction/commit boundary and UPSERT keeps concurrent backfills idempotent.
++        async with get_conn() as conn:
++            n = await insert_bars(conn, effective_venue, effective_symbol, req.timeframe, bars)
+         fetched_total += len(bars)
+         inserted_total += n
+ 
