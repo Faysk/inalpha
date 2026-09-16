@@ -90,6 +90,19 @@ requests queued behind Yahoo lock without holding DB connections
 
 That is a clear resource-order improvement, though queue length/latency can still be large.
 
+### Baostock / Tencent history
+
+Current A-share history path also has a process-local `_FETCH_LOCK`, minimum source interval and a bounded wait/worker timeout.
+
+So the same resource-order argument applies:
+
+```text
+before: requests may queue behind the source lock while retaining DB leases
+after:  requests can queue behind the source lock without retaining DB leases
+```
+
+This is a particularly useful moved-bottleneck check because provider concurrency should remain serialized even if more backfill coroutines can coexist.
+
 ### FRED
 
 Current FRED connector uses `asyncio.to_thread` around the synchronous FRED client and has no connector-local semaphore/admission gate.
@@ -146,7 +159,7 @@ That would only move the failure boundary.
 
 ## 5. Safe testing policy
 
-Do **not** stress FRED/Yahoo/Alpaca to discover their limits.
+Do **not** stress FRED/Yahoo/Alpaca/Baostock upstreams to discover their limits.
 
 Use fake providers for capacity sweeps.
 
@@ -231,3 +244,43 @@ The data-service now has unlimited/sufficient backfill capacity.
 ```
 
 If provider concurrency becomes the next measured constraint, say so explicitly and either include a separately justified small control or leave it as follow-up depending on acceptance results.
+
+---
+
+## 9. Same-key completion-order correctness guard
+
+`insert_bars()` currently uses unconditional `ON CONFLICT ... DO UPDATE` for every OHLCV field.
+
+Concurrent backfills for the same `(venue, symbol, timeframe)` are already possible today. Two requests can read the same `latest_bar_ts`, fetch overlapping windows and then persist them in whichever order provider calls finish.
+
+That means the current persistence rule is effectively:
+
+```text
+last DB writer wins for an overlapping candle
+```
+
+This is usually harmless when provider responses are identical, and it is an **existing concurrency class**, not something Candidate A invents.
+
+However Candidate A can allow more same-key provider work to coexist because DB pool capacity no longer accidentally limits how many requests reach provider I/O. Therefore before declaring Candidate A safe under a workload with meaningful same-key duplication, record:
+
+```text
+same-key concurrent backfill count
+provider completion ordering
+final latest-bar timestamp
+final overlapping candle values where practical
+```
+
+Particular concern: the route intentionally re-fetches the latest candle so a previously forming candle can be updated. If two overlapping provider responses represent different observations of that same candle and the older observation completes last, unconditional upsert can overwrite the newer observation.
+
+Decision rule:
+
+```text
+H4 / same-key duplication not material
+→ do not expand PR1; record existing risk and keep Candidate A focused
+
+H4 material and Candidate A meaningfully increases overlapping same-key work
+→ add a focused completion-order diagnostic before shipping
+→ decide whether coalescing/admission is required for correctness/capacity
+```
+
+Do **not** add generic single-flight solely because this race is theoretically possible; first prove the representative workload creates enough same-key overlap to matter.
