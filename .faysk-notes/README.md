@@ -40,9 +40,13 @@ Faysk/inalpha
 | `14-candidate-fix-a-narrow-db-lease.md` | Prepared minimal candidate that releases DB capacity during external provider I/O; not selected until measured |
 | `15-error-classification-and-retry-chain.md` | Why `DATA_SERVICE_UNREACHABLE` can mean read timeout, pool-induced slowness, or real connectivity; retry amplification model |
 | `16-two-worker-fake-provider-harness.md` | Production-like 1/2-worker Uvicorn harness with a deterministic fake slow provider and no external API stress |
-| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process diagnostic for DB-pool starvation while provider I/O is blocked |
+| `17-candidate-fix-b-bound-macro-fanout.md` | Secondary factor-side candidate if cold macro fan-out remains material after the primary bottleneck is addressed |
+| `18-candidate-fix-c-data-admission-control.md` | Secondary data-side admission/queue candidate if external in-flight work still saturates the service |
+| `19-do-not-do-first.md` | Explicitly rejected first moves: pool/worker inflation, late semaphore, more retries, freshness downgrade, premature distributed machinery |
+| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process diagnostic for DB-pool starvation while provider I/O is blocked; includes non-DB control |
 | `tools/issue107_slow_data_app.py` | Temporary data-service wrapper that installs a fake slow `binance` connector after normal startup |
-| `tools/issue107_load_probe.py` | Local concurrent backfill + health probe preserving concrete HTTPX error types and latency percentiles |
+| `tools/issue107_load_probe.py` | Local concurrent backfill + DB/non-DB probe preserving concrete HTTPX error types and latency percentiles |
+| `tools/candidate_a_narrow_db_lease.patch` | Unapplied patch draft for Candidate A; documentation artifact only until baseline evidence selects it |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
 ## Working method
