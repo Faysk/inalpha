@@ -9,7 +9,9 @@ Example:
       --backfills 40 --health-probes 10 --health-timeout 1.0
 
 The script preserves concrete HTTPX exception types instead of collapsing everything into
-``DATA_SERVICE_UNREACHABLE``.
+``DATA_SERVICE_UNREACHABLE``. It probes both DB-backed ``/health`` and non-DB ``/openapi.json``
+while backfills are blocked so we can distinguish DB-pool starvation from general server/event-loop
+starvation.
 """
 
 from __future__ import annotations
@@ -21,7 +23,6 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -122,27 +123,30 @@ async def _backfill_one(
         )
 
 
-async def _health_one(
+async def _probe_one(
     client: httpx.AsyncClient,
+    *,
+    kind: str,
+    path: str,
     idx: int,
     timeout_s: float,
 ) -> Result:
     t0 = time.perf_counter()
     try:
         response = await client.get(
-            "/health",
-            headers={"X-Trace-Id": f"issue107-health-{idx}-{uuid4().hex[:8]}"},
+            path,
+            headers={"X-Trace-Id": f"issue107-{kind}-{idx}-{uuid4().hex[:8]}"},
             timeout=timeout_s,
         )
         return Result(
-            kind="health",
+            kind=kind,
             latency_s=time.perf_counter() - t0,
             status=response.status_code,
             code=_response_code(response),
         )
     except httpx.RequestError as exc:
         return Result(
-            kind="health",
+            kind=kind,
             latency_s=time.perf_counter() - t0,
             error_type=type(exc).__name__,
         )
@@ -152,7 +156,7 @@ async def _run(args: argparse.Namespace) -> None:
     token = _token()
     headers = {"Authorization": f"Bearer {token}"}
     limits = httpx.Limits(
-        max_connections=max(100, args.backfills + args.health_probes + 20),
+        max_connections=max(100, args.backfills + args.health_probes * 2 + 20),
         max_keepalive_connections=40,
     )
     timeout = httpx.Timeout(args.backfill_timeout)
@@ -163,39 +167,72 @@ async def _run(args: argparse.Namespace) -> None:
         limits=limits,
         trust_env=False,
     ) as client:
-        # Confirm the target is alive before load. This result is intentionally not included in
+        # Confirm the target is alive before load. These results are intentionally not included in
         # the pressure statistics.
-        pre = await client.get("/health", timeout=2.0)
-        print(f"pre_health status={pre.status_code} body={pre.text}")
+        pre_health = await client.get("/health", timeout=2.0)
+        pre_control = await client.get("/openapi.json", timeout=2.0)
+        print(f"pre_health status={pre_health.status_code} body={pre_health.text}")
+        print(f"pre_openapi status={pre_control.status_code}")
 
         backfill_tasks = [
             asyncio.create_task(_backfill_one(client, headers, idx))
             for idx in range(args.backfills)
         ]
 
-        # Give requests enough time to enter route/provider wait before health probes begin.
+        # Give requests enough time to enter route/provider wait before control probes begin.
         await asyncio.sleep(args.probe_start_delay)
 
         health_results: list[Result] = []
+        control_results: list[Result] = []
         for idx in range(args.health_probes):
-            health_results.append(await _health_one(client, idx, args.health_timeout))
+            # Non-DB control first. If this remains fast while health times out, the process/event
+            # loop is alive and the evidence points more specifically at DB-backed capacity.
+            control_results.append(
+                await _probe_one(
+                    client,
+                    kind="openapi",
+                    path="/openapi.json",
+                    idx=idx,
+                    timeout_s=args.health_timeout,
+                )
+            )
+            health_results.append(
+                await _probe_one(
+                    client,
+                    kind="health",
+                    path="/health",
+                    idx=idx,
+                    timeout_s=args.health_timeout,
+                )
+            )
             if idx + 1 < args.health_probes:
                 await asyncio.sleep(args.health_interval)
 
         backfill_results = await asyncio.gather(*backfill_tasks)
 
+    _print_summary("openapi_control", control_results)
     _print_summary("health", health_results)
     _print_summary("backfill", backfill_results)
 
     progress = [
         r
         for r in backfill_results
-        if r.status is not None and r.status < 400
-        and (r.bars_fetched or 0) > 0
+        if r.status is not None and r.status < 400 and (r.bars_fetched or 0) > 0
     ]
     print(
         "backfill_data_progress "
         f"successful_with_rows={len(progress)}/{len(backfill_results)}"
+    )
+
+    health_failures = sum(
+        1 for r in health_results if r.error_type is not None or (r.status or 0) >= 400
+    )
+    control_failures = sum(
+        1 for r in control_results if r.error_type is not None or (r.status or 0) >= 400
+    )
+    print(
+        "isolation_signal "
+        f"health_failures={health_failures} openapi_failures={control_failures}"
     )
 
 
