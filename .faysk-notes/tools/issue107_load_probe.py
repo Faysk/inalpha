@@ -11,7 +11,8 @@ Example:
 The script preserves concrete HTTPX exception types instead of collapsing everything into
 ``DATA_SERVICE_UNREACHABLE``. It probes both DB-backed ``/health`` and non-DB ``/openapi.json``
 while backfills are blocked so we can distinguish DB-pool starvation from general server/event-loop
-starvation.
+starvation. When the contributor wrapper is used it also records ``X-Issue107-Worker-Pid`` so a
+2-worker run does not assume requests were split 50/50.
 """
 
 from __future__ import annotations
@@ -39,6 +40,7 @@ class Result:
     code: str | None = None
     bars_fetched: int | None = None
     bars_inserted: int | None = None
+    worker_pid: str | None = None
 
 
 def _percentile(values: list[float], q: float) -> float | None:
@@ -70,6 +72,10 @@ def _response_code(response: httpx.Response) -> str | None:
     except Exception:
         return None
     return body.get("code") if isinstance(body, dict) else None
+
+
+def _worker_pid(response: httpx.Response) -> str | None:
+    return response.headers.get("X-Issue107-Worker-Pid")
 
 
 async def _backfill_one(
@@ -114,6 +120,7 @@ async def _backfill_one(
             code=_response_code(response),
             bars_fetched=bars_fetched,
             bars_inserted=bars_inserted,
+            worker_pid=_worker_pid(response),
         )
     except httpx.RequestError as exc:
         return Result(
@@ -143,6 +150,7 @@ async def _probe_one(
             latency_s=time.perf_counter() - t0,
             status=response.status_code,
             code=_response_code(response),
+            worker_pid=_worker_pid(response),
         )
     except httpx.RequestError as exc:
         return Result(
@@ -171,8 +179,14 @@ async def _run(args: argparse.Namespace) -> None:
         # the pressure statistics.
         pre_health = await client.get("/health", timeout=2.0)
         pre_control = await client.get("/openapi.json", timeout=2.0)
-        print(f"pre_health status={pre_health.status_code} body={pre_health.text}")
-        print(f"pre_openapi status={pre_control.status_code}")
+        print(
+            "pre_health "
+            f"status={pre_health.status_code} pid={_worker_pid(pre_health)} body={pre_health.text}"
+        )
+        print(
+            "pre_openapi "
+            f"status={pre_control.status_code} pid={_worker_pid(pre_control)}"
+        )
 
         backfill_tasks = [
             asyncio.create_task(_backfill_one(client, headers, idx))
@@ -241,6 +255,7 @@ def _print_summary(name: str, results: list[Result]) -> None:
     statuses = Counter(str(r.status) for r in results if r.status is not None)
     errors = Counter(r.error_type for r in results if r.error_type is not None)
     codes = Counter(r.code for r in results if r.code is not None)
+    pids = Counter(r.worker_pid for r in results if r.worker_pid is not None)
 
     p50 = _percentile(latencies, 0.50)
     p95 = _percentile(latencies, 0.95)
@@ -251,6 +266,7 @@ def _print_summary(name: str, results: list[Result]) -> None:
     print(f"status_counts={dict(statuses)}")
     print(f"error_type_counts={dict(errors)}")
     print(f"error_code_counts={dict(codes)}")
+    print(f"worker_pid_counts={dict(pids)}")
     print(
         "latency_s "
         f"p50={p50:.3f} p95={p95:.3f} p99={p99:.3f} max={max(latencies):.3f}"
