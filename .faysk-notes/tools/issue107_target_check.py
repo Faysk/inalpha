@@ -6,9 +6,10 @@ or any external market-data provider.
 Use it immediately before factor-driven macro/mixed capacity probes to prove that:
 
 1. the data target is issue107_slow_data_app with every required venue faked;
-2. the factor target is issue107_factor_app;
-3. factor's configured data_service_url equals the exact contributor data URL being checked;
-4. macro can optionally be required for macro/mixed scenarios.
+2. the data wrapper has disabled the startup constituent scheduler and blocks non-fake OHLCV venues;
+3. the factor target is issue107_factor_app;
+4. factor's configured data_service_url equals the exact contributor data URL being checked;
+5. macro can optionally be required for macro/mixed scenarios.
 """
 
 from __future__ import annotations
@@ -47,6 +48,11 @@ async def _run(args: argparse.Namespace) -> None:
         for item in str(data.get("fake_venues", "")).split(",")
         if item.strip()
     }
+    blocked_venues = {
+        item.strip().lower()
+        for item in str(data.get("blocked_venues", "")).split(",")
+        if item.strip()
+    }
     required_venues = {
         item.strip().lower()
         for item in args.required_venues.split(",")
@@ -57,6 +63,16 @@ async def _run(args: argparse.Namespace) -> None:
         raise RuntimeError(
             "unsafe data target: not all required venues are fake; "
             f"missing={sorted(missing)} configured={sorted(fake_venues)}"
+        )
+    if required_venues & blocked_venues:
+        raise RuntimeError(
+            "unsafe data target: a required fake venue is also reported blocked; "
+            f"overlap={sorted(required_venues & blocked_venues)}"
+        )
+    if data.get("snapshot_scheduler_forced_disabled") != 1:
+        raise RuntimeError(
+            "unsafe data target: contributor wrapper did not prove the startup constituent "
+            "scheduler is forced disabled"
         )
 
     factor = await _json_get(factor_url, "/__issue107/config")
@@ -83,7 +99,9 @@ async def _run(args: argparse.Namespace) -> None:
     print(f"factor_url={factor_url}")
     print(f"factor_data_service_url={configured_data_url}")
     print(f"fake_venues={','.join(sorted(fake_venues))}")
+    print(f"blocked_venues={','.join(sorted(blocked_venues))}")
     print(f"required_venues={','.join(sorted(required_venues))}")
+    print("snapshot_scheduler_forced_disabled=true")
     print(f"macro_enabled={factor.get('macro_enabled')}")
 
 
