@@ -71,6 +71,7 @@ Faysk/inalpha
 | `45-evidence-capture-helper.md` | Windows evidence-session workflow that records revision/tool/host metadata outside the Git working tree without dumping secrets |
 | `46-data-regression-ci-enforcement-gap.md` | Current CI runs data Ruff/mypy but not data pytest; records options without automatically broadening #107 into a CI-policy change |
 | `47-benchmark-reset-safety.md` | Fail-closed dedicated-DB reset workflow so cold-state benchmarks cannot silently truncate the ordinary development database |
+| `48-factor-target-fail-closed.md` | Fail-closed factor wrapper so factor/mixed load cannot silently route to the ordinary data-service instead of the fake benchmark target |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
@@ -78,6 +79,7 @@ Faysk/inalpha
 | `tools/issue107_slow_data_app.py` | Multi-venue fake provider wrapper with async/thread modes, per-venue counters, per-path HTTP counts, worker PID, sync-thread counters and DB-free pool-state endpoint |
 | `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles, worker PID distribution and pool-state samples; fails closed unless Binance is fake |
 | `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence |
+| `tools/issue107_factor_app.py` | Contributor-only factor wrapper that refuses startup unless its configured data-service URL matches the expected local fake target |
 | `tools/issue107_factor_macro_probe.py` | Safe full-stack cold/warm factor macro probe with factor→data HTTP, fake-provider and pool-counter deltas |
 | `tools/issue107_runner_poll_probe.py` | Live-runner-like fresh poll probe with aligned/staggered scheduling and peak in-flight pool/provider sampling |
 | `tools/issue107_mixed_workload_probe.py` | Combined factor macro + runner fresh polling + DB/non-DB control workload for issue-level reproduction |
