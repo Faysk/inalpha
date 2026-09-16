@@ -83,7 +83,7 @@ The probe refuses to run if a requested venue is not fake.
 
 ---
 
-## 4. Important fake-provider fidelity rule
+## 4. Fake-provider fidelity and DB-state rules
 
 Do **not** run this probe with the fake wrapper default of one returned bar per provider call.
 
@@ -97,6 +97,21 @@ ISSUE107_FAKE_BARS_PER_FETCH=1000
 
 The probe enforces at least 10 synthetic bars per provider call and recommends 1000.
 
+For aligned-vs-stagger comparisons, also use the dedicated benchmark database from:
+
+```text
+41-benchmark-db-state-determinism.md
+```
+
+Before **each** comparison intended to start cold:
+
+```text
+TRUNCATE bars in inalpha_issue107
+verify count(*) = 0
+```
+
+Otherwise the second experiment may benefit from incremental backfill over rows inserted by the first experiment, contaminating the H6 comparison.
+
 ---
 
 ## 5. Exact one-worker experiment
@@ -106,6 +121,7 @@ First use one data worker because process-local provider/pool counters are then 
 Example data wrapper:
 
 ```bash
+DATABASE_URL="$ISSUE107_DATABASE_URL" \
 ISSUE107_FAKE_VENUES=binance,baostock,yfinance \
 ISSUE107_FAKE_BARS_PER_FETCH=1000 \
 ISSUE107_PROVIDER_MODE=async \
@@ -114,7 +130,7 @@ uv run uvicorn issue107_slow_data_app:app \
   --host 127.0.0.1 --port 18001 --workers 1
 ```
 
-Aligned run:
+Cold aligned run after dedicated-bars reset:
 
 ```bash
 uv run python issue107_runner_poll_probe.py \
@@ -124,7 +140,7 @@ uv run python issue107_runner_poll_probe.py \
   --stagger-ms 0
 ```
 
-Controlled stagger:
+Save output, reset the dedicated bars table again, then run the controlled stagger:
 
 ```bash
 uv run python issue107_runner_poll_probe.py \
@@ -134,9 +150,9 @@ uv run python issue107_runner_poll_probe.py \
   --stagger-ms 100
 ```
 
-Then repeat with the exact same fake delay, DB state and run count.
+Keep the same fake delay, provider mode, worker count and run count.
 
-A second useful stagger is 250 ms if 100 ms produces an ambiguous result.
+A second useful stagger is 250 ms if 100 ms produces an ambiguous result; reset bars again before that comparison.
 
 ---
 
@@ -190,6 +206,7 @@ That is intentional for H6:
 ```text
 constant provider behavior
 + same total caller work
++ same initial DB state
 + only change request alignment
 ```
 
@@ -207,7 +224,7 @@ Do not interpret this harness as a yfinance-specific throughput benchmark.
 stagger=0:
   materially higher pool waiting / lower available capacity / worse p95 / errors
 
-same workload with small stagger:
+same cold-state workload with small stagger:
   materially lower peak pressure and better latency/error behavior
 ```
 
@@ -245,7 +262,8 @@ For two-worker runs:
 
 - use response PID headers and server logs;
 - do not sum/compare state deltas as though they came from one global counter;
-- the primary output becomes external latency/error behavior plus per-PID evidence.
+- the primary output becomes external latency/error behavior plus per-PID evidence;
+- keep the same dedicated DB reset discipline before aligned/stagger comparisons.
 
 ---
 
@@ -264,4 +282,4 @@ concurrent _build_session()
 
 `29-runner-resume-factor-burst-shape.md` documents the baseline/factor conditions.
 
-The next higher-fidelity step is a mixed factor + runner workload against the same fake data wrapper, before deciding whether we need an actual seeded paper restart integration test.
+The next higher-fidelity step is the mixed factor + runner workload in `39-mixed-workload-harness.md` before deciding whether we need an actual seeded paper restart integration test.
