@@ -77,9 +77,48 @@ and returns deterministic spaced bars up to the requested batch limit. The real 
 
 ---
 
-## 3. Materialize contributor tooling
+## 3. Benchmark database state is part of the experiment
 
-From repository root on `fix/data-service-saturation`:
+Use:
+
+```text
+41-benchmark-db-state-determinism.md
+```
+
+and the dedicated DB:
+
+```text
+inalpha_issue107
+```
+
+A factor restart clears factor process memory but **does not** clear PostgreSQL bars.
+
+For each experiment described as cold in both layers:
+
+```text
+factor cache = cold
+data DB bars = cold
+```
+
+perform:
+
+```text
+restart factor
+TRUNCATE bars in dedicated benchmark DB
+verify count(*) = 0
+```
+
+before the run.
+
+The immediate warm wave inside `issue107_factor_macro_probe.py` is different: do not restart factor or truncate bars between the first and second wave because the second wave intentionally measures post-population reuse.
+
+---
+
+## 4. Materialize contributor tooling
+
+Prefer `40-local-preflight-helper.md`.
+
+Manual fallback from repository root on `fix/data-service-saturation`:
 
 ```bash
 git fetch origin notes/issue-107
@@ -91,18 +130,6 @@ git show origin/notes/issue-107:.faysk-notes/tools/issue107_factor_macro_probe.p
   > services/factor/issue107_factor_macro_probe.py
 ```
 
-PowerShell:
-
-```powershell
-git fetch origin notes/issue-107
-
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_slow_data_app.py |
-  Set-Content -Encoding utf8 services/data/issue107_slow_data_app.py
-
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_factor_macro_probe.py |
-  Set-Content -Encoding utf8 services/factor/issue107_factor_macro_probe.py
-```
-
 Confirm both are untracked and **do not add them**:
 
 ```bash
@@ -111,7 +138,7 @@ git status --short
 
 ---
 
-## 4. Start fake data-service — exact-count mode
+## 5. Start fake data-service — exact-count mode
 
 For the first macro experiment, use **one data worker** so the wrapper state counters are exact for the whole data-service process.
 
@@ -120,6 +147,7 @@ From `services/data`:
 ### Bash
 
 ```bash
+DATABASE_URL="$ISSUE107_DATABASE_URL" \
 ISSUE107_FAKE_VENUES=binance,fred \
 ISSUE107_FAKE_BARS_PER_FETCH=1000 \
 ISSUE107_PROVIDER_MODE=async \
@@ -131,6 +159,7 @@ uv run uvicorn issue107_slow_data_app:app \
 ### PowerShell
 
 ```powershell
+$env:DATABASE_URL = $env:ISSUE107_DATABASE_URL
 $env:ISSUE107_FAKE_VENUES = "binance,fred"
 $env:ISSUE107_FAKE_BARS_PER_FETCH = "1000"
 $env:ISSUE107_PROVIDER_MODE = "async"
@@ -150,7 +179,7 @@ FRED does not need a real API key: the wrapper installs a local registry entry e
 
 ---
 
-## 5. Start factor-service against fake data
+## 6. Start factor-service against fake data
 
 Use one factor worker to match the current production topology and to keep the module-level cache model unambiguous.
 
@@ -159,6 +188,7 @@ From `services/factor` in a separate terminal:
 ### Bash
 
 ```bash
+DATABASE_URL="$ISSUE107_DATABASE_URL" \
 DATA_SERVICE_URL=http://127.0.0.1:18001 \
 FACTOR_MACRO_ENABLED=true \
 uv run uvicorn inalpha_factor.main:app \
@@ -168,20 +198,28 @@ uv run uvicorn inalpha_factor.main:app \
 ### PowerShell
 
 ```powershell
+$env:DATABASE_URL = $env:ISSUE107_DATABASE_URL
 $env:DATA_SERVICE_URL = "http://127.0.0.1:18001"
 $env:FACTOR_MACRO_ENABLED = "true"
 uv run uvicorn inalpha_factor.main:app --host 127.0.0.1 --port 18004 --workers 1
 ```
 
-Factor DB is optional for `/score`; if its DB connection fails, candidates/custom registry degrade but score/catalog should still run.
+Factor DB is optional for `/score`; the dedicated DB simply keeps all #107 runtime state isolated and reproducible.
 
 Use the same root environment/JWT secret for factor and data so the token factor forwards is accepted by data-service.
 
 ---
 
-## 6. Cold identical-key wave — H11 + H8 shape
+## 7. Cold identical-key wave — H11 + H8 shape
 
-**Restart factor immediately before this run** so `_panel_cache` is empty.
+Start from:
+
+```text
+factor cache = cold
+data DB bars = cold
+```
+
+by restarting factor and resetting the dedicated bars table immediately before this run.
 
 From `services/factor`:
 
@@ -207,13 +245,26 @@ up to 6 × 18 macro fresh fetches
 
 Do **not** treat that arithmetic as the result. The probe records actual fake-provider deltas.
 
-Immediately afterward the script runs the same wave again. That second wave should be warm if the first completed successfully.
+Immediately afterward the script runs the same wave again. That second wave is the intentional warm control:
+
+```text
+do not truncate bars
+do not restart factor
+```
 
 ---
 
-## 7. Cold different-symbol wave — isolate shared macro-key duplication
+## 8. Cold different-symbol wave — isolate shared macro-key duplication
 
-Restart factor again so caches are cold.
+After saving the previous results:
+
+```text
+restart factor
+TRUNCATE dedicated bars
+verify bars count = 0
+```
+
+then run:
 
 ```bash
 uv run python issue107_factor_macro_probe.py \
@@ -237,11 +288,13 @@ fred provider starts materially > 18
 
 Exact values remain timing-dependent and must be recorded, not assumed.
 
+The DB reset matters here: otherwise the unique-symbol experiment could be compared against FRED series already persisted by the same-symbol experiment.
+
 ---
 
-## 8. Full factor-set control
+## 9. Full factor-set control
 
-After the macro-only behavior is understood, optionally restart factor and run:
+After the macro-only behavior is understood, optionally perform another full cold reset and run:
 
 ```bash
 uv run python issue107_factor_macro_probe.py \
@@ -256,9 +309,9 @@ Do not start here: the macro-only run gives cleaner attribution first.
 
 ---
 
-## 9. Thread-mode control
+## 10. Thread-mode control
 
-FRED and Alpaca wrap synchronous SDK calls with `asyncio.to_thread` in current code.
+FRED and some other connectors wrap synchronous SDK calls with `asyncio.to_thread` in current code.
 
 The fake wrapper can approximate the executor shape without external traffic:
 
@@ -266,7 +319,13 @@ The fake wrapper can approximate the executor shape without external traffic:
 ISSUE107_PROVIDER_MODE=thread
 ```
 
-Repeat a modest cold run after restarting both local services.
+Repeat a modest cold run after:
+
+```text
+restarting factor
+resetting dedicated bars
+restarting data wrapper in thread mode
+```
 
 Record:
 
@@ -283,11 +342,11 @@ This does not claim to reproduce real fredapi internals exactly; it isolates asy
 
 ---
 
-## 10. Production-like two-data-worker confirmation
+## 11. Production-like two-data-worker confirmation
 
 Exact aggregate provider counters are easiest with one data worker.
 
-After understanding the request shape, restart the fake data service with:
+After understanding the request shape, reset the dedicated bars DB, restart factor, then restart the fake data service with:
 
 ```text
 --workers 2
@@ -313,7 +372,7 @@ rather than pretending one state response is container-global.
 
 ---
 
-## 11. What the factor probe reports
+## 12. What the factor probe reports
 
 For each wave:
 
@@ -340,9 +399,11 @@ The script warns if the data state PID changes, because then exact deltas are in
 
 ---
 
-## 12. Key comparisons
+## 13. Key comparisons
 
 ### Cold vs warm
+
+Within one probe invocation:
 
 ```text
 cold first wave:
@@ -352,9 +413,13 @@ immediate warm second wave:
   should collapse data/provider work if cache population succeeded
 ```
 
+Do not reset state between those two waves.
+
 If warm still produces large data deltas, investigate cache keys/eviction/failures rather than assuming stampede.
 
 ### Same vs unique symbols
+
+Across separately reset cold experiments:
 
 ```text
 same:
@@ -368,7 +433,7 @@ This helps separate H11 from H8.
 
 ### Before vs Candidate A
 
-If H1 selects Candidate A, repeat the exact same cold scenario:
+If H1 selects Candidate A, repeat the exact same cold scenario after resetting the same dedicated benchmark DB:
 
 ```text
 same concurrency
@@ -377,13 +442,15 @@ same bars-per-fetch
 same workers
 same factor set
 same symbol mode
+same factor cache state
+same data DB state
 ```
 
 Compare DB availability/waits, factor errors/p95, provider starts/failures and data progress.
 
 ---
 
-## 13. Do not over-interpret fake data quality
+## 14. Do not over-interpret fake data quality
 
 The fake produces deterministic synthetic bars purely to drive the current data/factor control flow.
 
@@ -402,25 +469,15 @@ A factor returning fewer meaningful macro rows against synthetic data is not its
 
 ---
 
-## 14. Cleanup
+## 15. Cleanup
 
-Stop local Uvicorn processes, then:
+Use the preflight helper cleanup from `40-local-preflight-helper.md` or remove the two files manually and confirm:
 
 ```bash
-rm services/data/issue107_slow_data_app.py
-rm services/factor/issue107_factor_macro_probe.py
 git status --short
 ```
 
-PowerShell:
-
-```powershell
-Remove-Item services/data/issue107_slow_data_app.py
-Remove-Item services/factor/issue107_factor_macro_probe.py
-git status --short
-```
-
-The contribution branch must return clean.
+The contribution branch must return clean except for intentionally selected production changes later.
 
 ---
 
