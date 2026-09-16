@@ -89,11 +89,12 @@ services/factor/issue107_factor_macro_probe.py
 services/factor/issue107_runner_poll_probe.py
 services/factor/issue107_mixed_workload_probe.py
 services/factor/issue107_sustained_mixed_probe.py
+services/factor/issue107_sustained_acceptance_probe.py
 ```
 
 `issue107_factor_app.py` is mandatory for factor-driven capacity scenarios. It refuses startup when factor's configured `DATA_SERVICE_URL` does not match the expected contributor fake data-service target. `issue107_target_check.py` then verifies both ends without generating load. See `48-factor-target-fail-closed.md` and `49-runtime-safety-order.md`.
 
-`issue107_sustained_mixed_probe.py` is currently a bounded same-key-heavy soak diagnostic. Before using it as final cross-sectional p95 evidence, follow the limitations and follow-up in `50-sustained-load-acceptance.md`.
+`issue107_sustained_mixed_probe.py` is the base bounded soak helper and remains useful for H11-heavy same-key stress. `issue107_sustained_acceptance_probe.py` adds explicit cross-sectional `unique` factor keys, a `same` control and partial backlog reporting for the final sustained evidence stage. See `50-sustained-load-acceptance.md`.
 
 ### Data diagnostics
 
