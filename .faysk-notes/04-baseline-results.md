@@ -44,12 +44,15 @@ check-consistency:
 | Scenario | Topology / concurrency | Requests | HTTP success | Refresh progress | Fail | p50 | p95 | p99 | `DATA_SERVICE_UNREACHABLE` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
 | Slow backfill / pool diagnostic | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Fake slow provider — 1 worker | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Fake slow provider — 2 workers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Live macro cold cache | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Live macro warm cache | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Panel 10 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Panel 50 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Panel 300 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Runner-like | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Runner-like steady poll | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Runner resume/warmup burst | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Mixed | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 
 `Refresh progress` means the refresh actually advanced/inserted expected data, not merely that HTTP returned 200.
@@ -77,16 +80,43 @@ Fake provider delay:
 Concurrency:
 DB pool checked-out/wait symptoms:
 pg_stat_activity observations:
-Probe endpoint latency:
+DB-backed /health latency:
+Non-DB /openapi.json latency:
 Provider in-flight/queue behavior:
 First failure mode:
 ```
+
+Isolation signal:
+
+```text
+/openapi.json remains responsive while /health blocks? yes/no
+```
+
+If yes, this is stronger evidence for DB-backed capacity starvation than generic event-loop/ASGI starvation.
 
 Question to answer:
 
 ```text
 Does holding route-level DBConn across provider I/O materially contribute to saturation?
 ```
+
+### Production-like fake-provider run
+
+```text
+Workers:
+Fake provider delay:
+Concurrent backfills:
+Worker PIDs observed:
+Request distribution across PIDs:
+/openapi.json p95:
+/health p95:
+Backfill p95:
+Concrete transport error types:
+HTTP machine codes:
+Rows/progress:
+```
+
+Do not assume a 50/50 split across two workers.
 
 ### Live factor macro
 
@@ -119,6 +149,19 @@ Burst synchronization:
 Backfill/read request count:
 Interaction with factor traffic:
 ```
+
+### Live runner resume/warmup burst
+
+```text
+Persisted running runs resumed:
+Timeframe distribution:
+Warmup bars setting:
+Fresh backfills started during restart:
+Peak overlap:
+Data-service effect:
+```
+
+This scenario represents a natural current thundering-herd path: startup resumes persisted running runs and each build performs fresh warmup.
 
 ### Same-key duplication check
 
@@ -160,24 +203,63 @@ Zero-row/no-progress backfills:
 
 ## Error / result classification
 
-| Error/result | Count | Scenario | Retryable? | Notes |
+Do not use `DATA_SERVICE_UNREACHABLE` alone as a root-cause category. Factor maps multiple HTTPX transport failures into that code.
+
+| Error/result | Count | Scenario | Meaning / retry behavior | Notes |
 |---|---:|---|---|---|
-| `DATA_SERVICE_UNREACHABLE` | TBD | TBD | yes/transient? | TBD |
-| `BARS_UPSTREAM_UNAVAILABLE` | TBD | TBD | provider-dependent | TBD |
+| `httpx.ConnectTimeout` | TBD | TBD | transport connect deadline | Distinguish from server slowness |
+| `httpx.ReadTimeout` | TBD | TBD | connected but no response bytes within read deadline | Key H1b signal if DB-backed request is waiting server-side |
+| `httpx.WriteTimeout` | TBD | TBD | request-body send deadline | TBD |
+| `httpx.PoolTimeout` (client) | TBD | TBD | load-generator/caller client pool exhausted | Must not confuse with server DB pool |
+| `httpx.ConnectError` | TBD | TBD | actual connection error | Closest to literal “failed to connect” |
+| other `httpx.RequestError` | TBD | TBD | preserve concrete subtype | TBD |
+| `DATA_SERVICE_UNREACHABLE` | TBD | TBD | factor's mapped transport failure after retries | Record underlying subtype/log evidence where possible |
+| HTTP 500 `INTERNAL_ERROR` | TBD | TBD | unexpected server error; can include DB pool checkout timeout | Correlate logs/trace ID |
+| `BARS_UPSTREAM_UNAVAILABLE` | TBD | TBD | provider exception surfaced by backfill | provider-dependent |
 | HTTP 200 + zero/no progress | TBD | TBD | not necessarily success | watch yfinance/#74 |
-| timeout | TBD | TBD | TBD | TBD |
-| HTTP 5xx | TBD | TBD | TBD | TBD |
+| intentional busy/backpressure | N/A baseline | after fix only | selected semantics TBD | report separately from transport failure |
+
+### 30-second race to look for
+
+Current static values:
+
+```text
+server DB pool checkout timeout ≈ 30s
+factor GET HTTP timeout          ≈ 30s
+```
+
+If the same capacity event sometimes yields HTTP 500 and sometimes caller `ReadTimeout`, preserve both; do not assume they are unrelated until trace/timing evidence says so.
+
+---
+
+## Retry amplification
+
+Where practical record:
+
+```text
+logical factor GET operations:
+physical GET attempts:
+retry ratio:
+```
+
+Question:
+
+```text
+Does sustained slowness convert one logical read into multiple physical requests because the
+30s client timeout is reached?
+```
 
 ---
 
 ## Hypothesis results
 
 - [ ] H1: DB connection lifetime across provider I/O is a major saturation multiplier
+- [ ] H1b: DB wait/server slowness reaches factor HTTP deadlines and is mapped to `DATA_SERVICE_UNREACHABLE`
 - [ ] H2: expensive backfill concurrency is independently a bottleneck
 - [ ] H3: factor HTTP connection churn is material
 - [ ] H4: duplicate same-key work outside dashboard is material
 - [ ] H5: one provider monopolizes capacity
-- [ ] H6: live-runner synchronization materially contributes
+- [ ] H6: live-runner synchronization/resume burst materially contributes
 - [ ] H7: event-loop/thread-pool saturation is primary
 
 Evidence:
