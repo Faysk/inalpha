@@ -1,15 +1,17 @@
 """Contributor-only sustained acceptance probe for Inalpha issue #107.
 
 This is the acceptance-oriented companion to ``issue107_sustained_mixed_probe.py``.
-It reuses that tool's request/result helpers but adds two properties needed before using
-sustained results as issue-level evidence:
+It reuses that tool's request/result helpers but adds properties needed before using sustained
+results as issue-level evidence:
 
 1. explicit factor symbol shape (``unique`` cross-sectional vs ``same`` H11 stress);
 2. bounded scheduling/settling that preserves partial evidence instead of hiding it when the
-   service cannot drain all work before the settle timeout.
+   service cannot drain all work before the settle timeout;
+3. missed schedule slots are skipped rather than caught up as an artificial burst;
+4. one-worker before/after fake-provider, HTTP and DB-pool counter deltas are printed alongside
+   latency percentiles.
 
-No production code is changed. All target/provider safety checks are inherited from the base
-contributor probe and must pass before any load is scheduled.
+No production code is changed. All target/provider safety checks must pass before load is scheduled.
 """
 
 from __future__ import annotations
@@ -144,6 +146,43 @@ async def _collect_finished(
     return sorted(cycles, key=lambda item: item.cycle), pending_count, cycle_errors
 
 
+def _delta(before: dict[str, Any], after: dict[str, Any], key: str) -> int | None:
+    if key not in before and key not in after:
+        return None
+    return int(after.get(key, 0)) - int(before.get(key, 0))
+
+
+def _print_counter_deltas(before: dict[str, Any], after: dict[str, Any]) -> None:
+    print("\n[data_state_delta]")
+    print(f"pid_before={before.get('pid')} pid_after={after.get('pid')}")
+    if before.get("pid") != after.get("pid"):
+        print("WARNING: before/after state came from different data workers; exact deltas are invalid")
+
+    keys = [
+        "http_post_backfill_bars_total",
+        "http_get_bars_total",
+        "started",
+        "completed",
+        "cancelled",
+        "failed",
+        "thread_started",
+        "thread_completed",
+        "pool_requests_num",
+        "pool_requests_queued",
+        "pool_requests_wait_ms",
+        "pool_requests_errors",
+        "pool_usage_ms",
+    ]
+    for venue in ("binance", "fred", "baostock", "yfinance"):
+        for suffix in ("started", "completed", "cancelled", "failed"):
+            keys.append(f"venue_{venue}_{suffix}")
+
+    for key in keys:
+        value = _delta(before, after, key)
+        if value is not None:
+            print(f"{key}_delta={value}")
+
+
 async def _run(args: argparse.Namespace) -> None:
     if args.duration <= 0 or args.cycle_interval <= 0:
         raise ValueError("--duration and --cycle-interval must be > 0")
@@ -157,6 +196,28 @@ async def _run(args: argparse.Namespace) -> None:
     args.data_url = base._norm(args.data_url)
     args.factor_url = base._norm(args.factor_url)
     data_state, factor_state = await base._preflight(args)
+
+    # Acceptance runs require the hardened contributor data wrapper. The separate no-load target
+    # checker remains the authoritative pre-run command, but this duplicate guard keeps direct use
+    # fail-closed as well.
+    if data_state.get("snapshot_scheduler_forced_disabled") != 1:
+        raise RuntimeError(
+            "unsafe sustained target: data wrapper did not prove snapshot scheduler isolation"
+        )
+    blocked = {
+        item.strip().lower()
+        for item in str(data_state.get("blocked_venues", "")).split(",")
+        if item.strip()
+    }
+    required = {"binance", "fred"} | {
+        venue for venue, _symbol, _timeframe in base._RUN_PRESETS[: args.runner_runs]
+    }
+    if blocked & required:
+        raise RuntimeError(
+            "unsafe sustained target: required workload venue is blocked instead of fake; "
+            f"overlap={sorted(blocked & required)}"
+        )
+
     token = base._token()
     factor_ids = await base._macro_ids(args.factor_url, token)
     runs = base._build_runs(args.runner_runs)
@@ -164,6 +225,7 @@ async def _run(args: argparse.Namespace) -> None:
     print("issue107_sustained_acceptance_preflight=PASS")
     print(f"data_pid={data_state.get('pid')} factor_pid={factor_state.get('pid')}")
     print(f"macro_factor_ids={len(factor_ids)}")
+    print(f"blocked_venues={','.join(sorted(blocked))}")
     print(
         "configuration "
         f"duration={args.duration}s interval={args.cycle_interval}s "
@@ -179,6 +241,7 @@ async def _run(args: argparse.Namespace) -> None:
     )
     control_limits = httpx.Limits(max_connections=30, max_keepalive_connections=10)
 
+    before_state = await base._json_get(args.data_url, "/__issue107/state")
     stop_sampling = asyncio.Event()
     samples: list[dict[str, Any]] = []
     sampler = asyncio.create_task(
@@ -186,7 +249,8 @@ async def _run(args: argparse.Namespace) -> None:
     )
 
     cycle_tasks: list[asyncio.Task[base.CycleResult]] = []
-    skipped_cycles = 0
+    skipped_pending = 0
+    skipped_schedule_lag = 0
     started_cycles = 0
     benchmark_start = time.perf_counter()
     slot = 0
@@ -211,14 +275,21 @@ async def _run(args: argparse.Namespace) -> None:
                 now = time.perf_counter()
                 if now < scheduled_at:
                     await asyncio.sleep(scheduled_at - now)
+                    now = time.perf_counter()
 
-                # Re-check after sleep so a delayed scheduler never injects a cycle beyond duration.
-                if time.perf_counter() - benchmark_start >= args.duration:
+                if now - benchmark_start >= args.duration:
                     break
+
+                # Open-loop discipline: when the scheduler is at least one full interval late, skip
+                # this slot. Do not "catch up" by injecting old slots back-to-back as a synthetic burst.
+                if now - scheduled_at >= args.cycle_interval:
+                    skipped_schedule_lag += 1
+                    slot += 1
+                    continue
 
                 pending = sum(1 for task in cycle_tasks if not task.done())
                 if pending >= args.max_pending_cycles:
-                    skipped_cycles += 1
+                    skipped_pending += 1
                 else:
                     cycle_tasks.append(
                         asyncio.create_task(
@@ -244,12 +315,14 @@ async def _run(args: argparse.Namespace) -> None:
             stop_sampling.set()
             await sampler
 
+    after_state = await base._json_get(args.data_url, "/__issue107/state")
     total_elapsed = time.perf_counter() - benchmark_start
 
     print("\n[schedule]")
     print(f"cycles_started={started_cycles}")
     print(f"cycles_completed={len(cycles)}")
-    print(f"cycles_skipped_pending_cap={skipped_cycles}")
+    print(f"cycles_skipped_pending_cap={skipped_pending}")
+    print(f"cycles_skipped_schedule_lag={skipped_schedule_lag}")
     print(f"cycles_pending_after_settle={pending_after_settle}")
     print(f"cycle_task_errors={cycle_errors}")
     print(f"benchmark_elapsed_s={total_elapsed:.3f}")
@@ -268,6 +341,7 @@ async def _run(args: argparse.Namespace) -> None:
     base._print_result_summary("runner_bars", base._all_results(cycles, "runner_bars"))
     base._print_result_summary("health", base._all_results(cycles, "health"))
     base._print_result_summary("openapi_control", base._all_results(cycles, "openapi"))
+    _print_counter_deltas(before_state, after_state)
     base._print_state_summary(samples)
 
     print("\n[acceptance_interpretation]")
@@ -276,12 +350,20 @@ async def _run(args: argparse.Namespace) -> None:
         "evidence; same is an H11 stress control."
     )
     print(
-        "- cycles_skipped_pending_cap and cycles_pending_after_settle are capacity/backlog signals; "
-        "they must not be counted as successful throughput."
+        "- cycles_skipped_pending_cap, cycles_skipped_schedule_lag and cycles_pending_after_settle "
+        "are capacity/harness-scheduling signals; none count as successful throughput."
     )
     print(
         "- zero runner backfill progress can be legitimate during repeated polling inside one market "
         "interval; interpret it with GET /bars results and provider/timestamp evidence."
+    )
+    print(
+        "- exact before/after counter deltas require one data worker; with two workers use per-PID "
+        "logs/state samples and client-visible results instead."
+    )
+    print(
+        "- issue #107 asks for controlled p95 but does not define a numeric SLO in the issue; report "
+        "measured p95 under the documented workload rather than inventing an acceptance threshold."
     )
     print(
         "- preserve the exact duration/interval/concurrency/stagger/provider settings for before/after."
