@@ -78,7 +78,7 @@ No strategy orders, risk actions or real provider traffic are required.
 
 ---
 
-## 3. Mandatory safe topology
+## 3. Mandatory safe topology and state
 
 For exact process-local counters, start with:
 
@@ -102,7 +102,19 @@ and must use:
 ISSUE107_FAKE_BARS_PER_FETCH=1000
 ```
 
-The script refuses to run unless these conditions are true for provider replacement/bar batching.
+Use the dedicated benchmark DB from:
+
+```text
+41-benchmark-db-state-determinism.md
+```
+
+Recommended:
+
+```text
+benchmark DB = inalpha_issue107
+```
+
+The script refuses to run unless required provider replacement/bar batching is present, but it cannot automatically prove that your DB/cache state matches the previous comparison. That discipline is external and must be recorded.
 
 Why 1000 bars:
 
@@ -113,11 +125,47 @@ Why 1000 bars:
 
 ---
 
-## 4. Recommended startup
+## 4. Cold-state reset rule
+
+This is essential because `/backfill/bars` is incremental.
+
+For each cold M1/M2/M3 comparison:
+
+```text
+1. finish the prior wave
+2. restart factor so process-local factor cache is empty
+3. TRUNCATE bars in the dedicated inalpha_issue107 DB
+4. verify count(*) from bars = 0
+5. keep provider mode/delay and worker topology unchanged
+6. run exactly one scenario
+7. save its output before resetting again
+```
+
+Do not compare:
+
+```text
+M1 with empty PostgreSQL bars
+against
+M2/M3 after M1 already populated the same FRED/price keys
+```
+
+Restarting factor alone is **not** enough: it clears factor memory but does not clear PostgreSQL bars.
+
+For every result label both:
+
+```text
+factor cache = cold/warm
+data DB bars = cold/warm
+```
+
+---
+
+## 5. Recommended startup
 
 Data wrapper, from `services/data` after copying the contributor tool locally:
 
 ```bash
+DATABASE_URL="$ISSUE107_DATABASE_URL" \
 ISSUE107_FAKE_VENUES=binance,fred,baostock,yfinance \
 ISSUE107_FAKE_BARS_PER_FETCH=1000 \
 ISSUE107_PROVIDER_MODE=async \
@@ -126,9 +174,10 @@ uv run uvicorn issue107_slow_data_app:app \
   --host 127.0.0.1 --port 18001 --workers 1
 ```
 
-Factor should point to that data wrapper:
+Factor should use the same dedicated DB for its optional DB paths and point to the wrapper:
 
 ```text
+DATABASE_URL=<inalpha_issue107 URL>
 DATA_SERVICE_URL=http://127.0.0.1:18001
 ```
 
@@ -138,7 +187,9 @@ Restart factor immediately before a run intended to represent **cold factor cach
 
 ---
 
-## 5. Baseline experiment M1 — aligned mixed burst
+## 6. Baseline experiment M1 — aligned mixed burst
+
+Start from cold factor cache + cold dedicated bars, then:
 
 ```bash
 uv run python issue107_mixed_workload_probe.py \
@@ -160,11 +211,13 @@ Shape:
 
 `factor-symbol-mode=same` intentionally exposes H11 as part of the high-pressure case.
 
+Save the complete output and state before resetting the DB for M2.
+
 ---
 
-## 6. Experiment M2 — same mixed workload, unique factor price keys
+## 7. Experiment M2 — unique factor price keys
 
-Restart factor first, then:
+Reset the dedicated bars table and restart factor first, then:
 
 ```bash
 uv run python issue107_mixed_workload_probe.py \
@@ -183,13 +236,13 @@ macro/date keys remain shared
 
 This reduces whole-score same-key H11 overlap while retaining H8 macro-key overlap.
 
-If M1 is much worse than M2, whole-score cold duplication may be a material multiplier.
+If M1 is much worse than M2 under equal DB/cache state, whole-score cold duplication may be a material multiplier.
 
 ---
 
-## 7. Experiment M3 — runner stagger control
+## 8. Experiment M3 — runner stagger control
 
-Restart factor so cold-cache conditions match M1, then:
+Reset the dedicated bars table and restart factor again so state matches M1, then:
 
 ```bash
 uv run python issue107_mixed_workload_probe.py \
@@ -207,7 +260,7 @@ Do not infer that a production stagger is needed until Candidate A is also teste
 
 ---
 
-## 8. What the harness measures
+## 9. What the harness measures
 
 ### Factor results
 
@@ -266,7 +319,7 @@ If OpenAPI stays responsive while health degrades, the evidence is more specific
 
 ---
 
-## 9. Acceptance interpretation
+## 10. Acceptance interpretation
 
 The issue's target is not “every request must always be 200 under arbitrary load.”
 
@@ -294,7 +347,7 @@ If a later Candidate C deliberately returns a busy response, count that separate
 
 ---
 
-## 10. Candidate A decision use
+## 11. Candidate A decision use
 
 The most important before/after comparison is:
 
@@ -315,7 +368,10 @@ factor concurrency
 runner count
 stagger
 factor cache condition
+data DB condition
 ```
+
+Use the dedicated DB reset before each cold before/after scenario.
 
 ### Candidate A is sufficient
 
@@ -340,7 +396,7 @@ That is exactly why provider and pool metrics are recorded together.
 
 ---
 
-## 11. Multi-worker confirmation
+## 12. Multi-worker confirmation
 
 Only after the mechanism is clear with one data worker, rerun with:
 
@@ -365,9 +421,11 @@ For two-worker evidence use:
 - client-visible p95/errors;
 - do not treat one sampled state endpoint as service-global metrics.
 
+Use the same dedicated DB reset discipline before cold comparisons even though counters become per-process.
+
 ---
 
-## 12. What this still does not prove
+## 13. What this still does not prove
 
 Even this mixed harness does not reproduce:
 
