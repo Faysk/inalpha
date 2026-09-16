@@ -9,7 +9,9 @@ results as issue-level evidence:
    service cannot drain all work before the settle timeout;
 3. missed schedule slots are skipped rather than caught up as an artificial burst;
 4. one-worker before/after fake-provider, HTTP and DB-pool counter deltas are printed alongside
-   latency percentiles.
+   latency percentiles;
+5. cycle cancellation explicitly cancels/awaits every spawned factor/runner/control task so a
+   settle-timeout cannot leave orphan load running after the benchmark summary.
 
 No production code is changed. All target/provider safety checks must pass before load is scheduled.
 """
@@ -60,7 +62,6 @@ async def _cycle(
         )
         for idx, symbol in enumerate(symbols)
     ]
-
     runner_tasks = [
         asyncio.create_task(
             base._runner_one(
@@ -75,48 +76,72 @@ async def _cycle(
         for run in runs
     ]
 
-    await asyncio.sleep(args.control_start_delay)
-    openapi_tasks = [
-        asyncio.create_task(
-            base._control_one(
-                control_client,
-                kind="openapi",
-                path="/openapi.json",
-                cycle=cycle,
-                idx=idx,
-                timeout_s=args.control_timeout,
-            )
-        )
-        for idx in range(args.controls_per_cycle)
-    ]
-    health_tasks = [
-        asyncio.create_task(
-            base._control_one(
-                control_client,
-                kind="health",
-                path="/health",
-                cycle=cycle,
-                idx=idx,
-                timeout_s=args.control_timeout,
-            )
-        )
-        for idx in range(args.controls_per_cycle)
-    ]
+    all_tasks: list[asyncio.Task[Any]] = [*factor_tasks, *runner_tasks]
+    openapi_tasks: list[asyncio.Task[base.Result]] = []
+    health_tasks: list[asyncio.Task[base.Result]] = []
 
-    factor_results = await asyncio.gather(*factor_tasks)
-    runner_pairs = await asyncio.gather(*runner_tasks)
-    openapi = await asyncio.gather(*openapi_tasks)
-    health = await asyncio.gather(*health_tasks)
+    try:
+        await asyncio.sleep(args.control_start_delay)
+        openapi_tasks = [
+            asyncio.create_task(
+                base._control_one(
+                    control_client,
+                    kind="openapi",
+                    path="/openapi.json",
+                    cycle=cycle,
+                    idx=idx,
+                    timeout_s=args.control_timeout,
+                )
+            )
+            for idx in range(args.controls_per_cycle)
+        ]
+        health_tasks = [
+            asyncio.create_task(
+                base._control_one(
+                    control_client,
+                    kind="health",
+                    path="/health",
+                    cycle=cycle,
+                    idx=idx,
+                    timeout_s=args.control_timeout,
+                )
+            )
+            for idx in range(args.controls_per_cycle)
+        ]
+        all_tasks.extend(openapi_tasks)
+        all_tasks.extend(health_tasks)
 
-    return base.CycleResult(
-        cycle=cycle,
-        elapsed_s=time.perf_counter() - started,
-        factor=factor_results,
-        runner_backfill=[pair[0] for pair in runner_pairs],
-        runner_bars=[pair[1] for pair in runner_pairs],
-        health=health,
-        openapi=openapi,
-    )
+        # Await all child operations as one set. If any unexpected exception or parent cancellation
+        # occurs, the finally block below cancels and drains every sibling task before returning.
+        raw = await asyncio.gather(*all_tasks)
+
+        factor_end = len(factor_tasks)
+        runner_end = factor_end + len(runner_tasks)
+        openapi_end = runner_end + len(openapi_tasks)
+
+        factor_results = raw[:factor_end]
+        runner_pairs = raw[factor_end:runner_end]
+        openapi = raw[runner_end:openapi_end]
+        health = raw[openapi_end:]
+
+        return base.CycleResult(
+            cycle=cycle,
+            elapsed_s=time.perf_counter() - started,
+            factor=factor_results,
+            runner_backfill=[pair[0] for pair in runner_pairs],
+            runner_bars=[pair[1] for pair in runner_pairs],
+            health=health,
+            openapi=openapi,
+        )
+    finally:
+        # asyncio task cancellation is not hierarchical for arbitrary create_task() children. An
+        # unfinished cycle cancelled by settle-timeout would otherwise be able to leave runner/control
+        # tasks alive. Explicitly cancel and await all children before the cycle task can finish.
+        for task in all_tasks:
+            if not task.done():
+                task.cancel()
+        if all_tasks:
+            await asyncio.gather(*all_tasks, return_exceptions=True)
 
 
 async def _collect_finished(
@@ -352,6 +377,10 @@ async def _run(args: argparse.Namespace) -> None:
     print(
         "- cycles_skipped_pending_cap, cycles_skipped_schedule_lag and cycles_pending_after_settle "
         "are capacity/harness-scheduling signals; none count as successful throughput."
+    )
+    print(
+        "- pending cycles are explicitly cancelled and their child factor/runner/control tasks are "
+        "drained before the final post-run state sample."
     )
     print(
         "- zero runner backfill progress can be legitimate during repeated polling inside one market "
