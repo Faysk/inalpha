@@ -51,7 +51,7 @@ if (-not (Test-Path (Join-Path $infraDir "docker-compose.yml"))) {
 
 Push-Location $infraDir
 try {
-    $running = & docker compose ps --status running --services 2>&1
+    $running = @(& docker compose ps --status running --services 2>&1)
     if ($LASTEXITCODE -ne 0) {
         throw "docker compose ps failed:`n$($running | Out-String)"
     }
@@ -67,7 +67,7 @@ try {
     }
 
     $barsRegclass = Invoke-ComposePsql "select coalesce(to_regclass('public.bars')::text, '');" -TuplesOnly
-    $barsReady = $barsRegclass -eq "bars"
+    $barsReady = $barsRegclass -in @("bars", "public.bars")
 
     Write-Host "benchmark_database=$actualDatabase"
     Write-Host "bars_table_ready=$barsReady"
@@ -77,7 +77,7 @@ try {
             throw "public.bars does not exist in $ExpectedDatabase. Apply current migrations first."
         }
         Write-Host "Database identity is correct; migrations still need to create public.bars."
-        exit 0
+        return
     }
 
     $before = Invoke-ComposePsql "select count(*) from public.bars;" -TuplesOnly
@@ -85,7 +85,7 @@ try {
 
     if ($Action -eq "verify") {
         Write-Host "verify only: no data changed"
-        exit 0
+        return
     }
 
     Write-Host "Resetting ONLY public.bars in the dedicated benchmark database..."
