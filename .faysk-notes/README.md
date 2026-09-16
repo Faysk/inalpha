@@ -44,8 +44,11 @@ Faysk/inalpha
 | `18-candidate-fix-c-data-admission-control.md` | Secondary data-side admission/queue candidate if external in-flight work still saturates the service |
 | `19-do-not-do-first.md` | Explicitly rejected first moves: pool/worker inflation, late semaphore, more retries, freshness downgrade, premature distributed machinery |
 | `20-candidate-fix-d-factor-http-pooling.md` | Low-priority connection-reuse candidate with explicit bearer-token isolation requirements |
+| `21-adjacent-data-db-lease-audit.md` | Audit of nearby data-service paths that also hold DB capacity across external I/O; explicitly kept out of #107 unless measured |
+| `22-h8-macro-cache-stampede.md` | Cold macro-cache same-key stampede hypothesis and decision gate for possible factor-side single-flight |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression draft: >pool-size provider waits must coexist with responsive DB-backed health |
+| `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
 | `tools/issue107_slow_data_app.py` | Temporary data-service wrapper that installs a fake slow `binance` connector after normal startup |
 | `tools/issue107_load_probe.py` | Local concurrent backfill + DB/non-DB probe preserving concrete HTTPX error types and latency percentiles |
 | `tools/candidate_a_narrow_db_lease.patch` | Unapplied patch draft for Candidate A; documentation artifact only until baseline evidence selects it |
