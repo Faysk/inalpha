@@ -47,11 +47,14 @@ Faysk/inalpha
 | `21-adjacent-data-db-lease-audit.md` | Audit of nearby data-service paths that also hold DB capacity across external I/O; explicitly kept out of #107 unless measured |
 | `22-h8-macro-cache-stampede.md` | Cold macro-cache same-key stampede hypothesis and decision gate for possible factor-side single-flight |
 | `23-candidate-a-deep-review.md` | Candidate A transaction, failure-precedence, idempotency and explicit-connection-lifetime review |
+| `24-client-timeout-cancellation.md` | H9 runtime test for whether timed-out clients leave older server/provider work alive and overlapping retries |
+| `25-pg-stat-activity-diagnostic.md` | DB-side `pg_stat_activity` evidence plan for open transactions retained during fake provider waits |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression draft: >pool-size provider waits must coexist with responsive DB-backed health |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
-| `tools/issue107_slow_data_app.py` | Temporary data-service wrapper that installs a fake slow `binance` connector after normal startup |
-| `tools/issue107_load_probe.py` | Local concurrent backfill + DB/non-DB probe preserving concrete HTTPX error types and latency percentiles |
+| `tools/issue107_slow_data_app.py` | Fake slow-provider wrapper with worker PID header, per-process counters, cancellation logs and DB-free diagnostic state endpoint |
+| `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles and observed worker PID distribution |
+| `tools/issue107_timeout_persistence_probe.py` | Real-TCP client-timeout experiment checking whether provider work remains active after callers time out |
 | `tools/candidate_a_narrow_db_lease.patch` | Unapplied patch draft for Candidate A; documentation artifact only until baseline evidence selects it |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
