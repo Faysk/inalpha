@@ -28,9 +28,9 @@ The script runs two waves with the same keys:
 1. cold concurrent wave;
 2. immediate warm wave.
 
-It records factor status/latency and data-wrapper provider/pool state deltas. ``same`` symbol mode
-exercises both full-score and macro same-key stampede potential. ``unique`` mode gives each factor
-request a different main price key while still sharing the same macro/date keys.
+It records factor status/latency plus exact one-worker data HTTP, fake-provider and pool-state deltas.
+``same`` symbol mode exercises both full-score and macro same-key stampede potential. ``unique``
+mode gives each factor request a different main price key while still sharing macro/date keys.
 """
 
 from __future__ import annotations
@@ -252,6 +252,8 @@ def _print_state_delta(label: str, before: dict[str, Any], after: dict[str, Any]
         print("WARNING: data state sampled different workers; exact deltas are not valid")
 
     keys = [
+        "http_post_backfill_bars_total",
+        "http_get_bars_total",
         "started",
         "completed",
         "cancelled",
@@ -273,7 +275,17 @@ def _print_state_delta(label: str, before: dict[str, Any], after: dict[str, Any]
         if value is not None:
             print(f"{key}_delta={value}")
 
-    for key in ("pool_pool_min", "pool_pool_max", "pool_pool_size", "pool_pool_available", "pool_requests_waiting"):
+    for key in (
+        "pool_pool_min",
+        "pool_pool_max",
+        "pool_pool_size",
+        "pool_pool_available",
+        "pool_requests_waiting",
+        "http_post_backfill_bars_inflight",
+        "http_get_bars_inflight",
+        "venue_binance_active",
+        "venue_fred_active",
+    ):
         if key in after:
             print(f"{key}_after={after[key]}")
 
@@ -347,12 +359,16 @@ async def _run(args: argparse.Namespace) -> None:
 
     print("\n[interpretation]")
     print(
-        "- exact provider-call deltas require data WORKERS=1; with multiple workers use logs + "
+        "- exact HTTP/provider deltas require data WORKERS=1; with multiple workers use logs + "
         "per-PID state sampling instead."
     )
     print(
         "- same-symbol cold concurrency can expose full-score + macro in-flight duplication; "
         "unique-symbol mode isolates different price keys that still share macro keys."
+    )
+    print(
+        "- compare http_post_backfill_bars_total/http_get_bars_total with provider-start deltas to "
+        "separate factor HTTP fan-out from data provider pagination/behavior."
     )
     print(
         "- an immediate warm wave with ~zero data/provider deltas confirms post-population cache "
