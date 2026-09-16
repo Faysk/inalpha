@@ -48,6 +48,52 @@ function Assert-Untracked([string]$Path) {
     }
 }
 
+function Assert-PythonSyntax([string[]]$Paths) {
+    if (-not $Paths -or $Paths.Count -eq 0) {
+        return
+    }
+    if (-not (Get-Command python -ErrorAction SilentlyContinue)) {
+        Write-Warning "python not found; skipping syntax-only validation of materialized .py diagnostics"
+        return
+    }
+
+    $validator = @'
+import ast
+import pathlib
+import sys
+
+for raw in sys.argv[1:]:
+    path = pathlib.Path(raw)
+    source = path.read_text(encoding="utf-8")
+    ast.parse(source, filename=str(path))
+print(f"python_syntax_ok={len(sys.argv) - 1}")
+'@
+    $output = & python -c $validator @Paths 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "Materialized Python diagnostic failed syntax validation:`n$($output | Out-String)"
+    }
+    Write-Host (($output | Out-String).Trim())
+}
+
+function Assert-PowerShellSyntax([string[]]$Paths) {
+    foreach ($path in $Paths) {
+        $tokens = $null
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Join-Path (Get-Location) $path),
+            [ref]$tokens,
+            [ref]$errors
+        )
+        if ($errors.Count -gt 0) {
+            $messages = ($errors | ForEach-Object { $_.Message }) -join "`n"
+            throw "Materialized PowerShell helper failed syntax validation: $path`n$messages"
+        }
+    }
+    if ($Paths.Count -gt 0) {
+        Write-Host "powershell_syntax_ok=$($Paths.Count)"
+    }
+}
+
 Require-Command git
 
 $repoRoot = (Invoke-Git rev-parse --show-toplevel | Select-Object -First 1).Trim()
@@ -130,6 +176,13 @@ foreach ($entry in $Files.GetEnumerator()) {
     [System.IO.File]::WriteAllText((Join-Path $repoRoot $destination), $text, $utf8NoBom)
     Write-Host "materialized $destination"
 }
+
+Write-Host ""
+Write-Host "Syntax-only validation of materialized contributor tooling:"
+$pythonFiles = @($Files.Values | Where-Object { $_.EndsWith(".py", [System.StringComparison]::OrdinalIgnoreCase) })
+$powerShellFiles = @($Files.Values | Where-Object { $_.EndsWith(".ps1", [System.StringComparison]::OrdinalIgnoreCase) })
+Assert-PythonSyntax $pythonFiles
+Assert-PowerShellSyntax $powerShellFiles
 
 Write-Host ""
 Write-Host "Diagnostic/helper files are intentionally UNTRACKED:"
