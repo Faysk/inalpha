@@ -12,7 +12,9 @@ Core property:
 The test controls its own pool size (2) instead of relying on the repository-wide default (10), so
 it will keep detecting a future regression even if the normal pool default is tuned later.
 
-No external provider is contacted.
+No external provider is contacted. The production constituent snapshot scheduler is also forced
+inactive inside this test fixture so contributor/local environment settings cannot create unrelated
+background provider traffic.
 """
 
 from __future__ import annotations
@@ -59,9 +61,9 @@ class _BlockingConnector:
 async def app_with_two_connection_pool(
     monkeypatch: pytest.MonkeyPatch,
 ) -> AsyncIterator[Any]:
-    """Run the real data-service lifespan but force its DB pool max_size to 2 for this test.
+    """Run real data lifespan with pool max_size=2 and no background provider scheduler.
 
-    The production fix must remain correct independent of the ordinary pool-size tuning. A tiny pool
+    The production fix must remain correct independent of ordinary pool-size tuning. A tiny pool
     also makes the before/after property deterministic with only four fake provider requests.
     """
     from inalpha_shared.db import init_pool as shared_init_pool
@@ -77,8 +79,9 @@ async def app_with_two_connection_pool(
             timeout=2.0,
         )
 
-    # main.lifespan resolves this module global at runtime, so patch before entering lifespan.
+    # main.lifespan resolves these module globals at runtime, so patch before entering lifespan.
     monkeypatch.setattr(main_mod, "init_pool", _init_small_pool)
+    monkeypatch.setattr(main_mod, "parse_indices", lambda _raw: [])
 
     connector = _BlockingConnector(expected_in_flight=4)
     async with main_mod.app.router.lifespan_context(main_mod.app):
