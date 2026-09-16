@@ -37,14 +37,15 @@ index d30a6a0..0000000 100644
      if cached_latest is not None and cached_latest > effective_from_ts:
          cursor = cached_latest
          _logger.info(
-@@ -198,7 +203,10 @@ async def backfill_bars(
+@@ -198,7 +203,11 @@ async def backfill_bars(
          bars = [b for b in bars if b[0] <= req.to_ts]
          if not bars:
              break
  
 -        n = await insert_bars(db, effective_venue, effective_symbol, req.timeframe, bars)
-+        # Persist each completed provider batch with a short DB lease. insert_bars() remains
-+        # the transaction/commit boundary and UPSERT keeps concurrent backfills idempotent.
++        # Persist each completed provider batch with a short DB lease. insert_bars() remains the
++        # transaction/commit boundary and its current UPSERT behavior is unchanged. Same-key
++        # completion ordering remains a separate concurrency/correctness question.
 +        async with get_conn() as conn:
 +            n = await insert_bars(conn, effective_venue, effective_symbol, req.timeframe, bars)
          fetched_total += len(bars)
