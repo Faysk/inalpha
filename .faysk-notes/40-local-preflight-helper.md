@@ -78,15 +78,18 @@ $path = Join-Path $env:TEMP 'prepare_issue107_local.ps1'
 
 ## 4. Files materialized
 
-### Factor diagnostics
+### Factor diagnostics / safety wrapper
 
 ```text
 services/factor/tests/test_issue107_macro_stampede_local.py
 services/factor/tests/test_issue107_live_cache_stampede_local.py
+services/factor/issue107_factor_app.py
 services/factor/issue107_factor_macro_probe.py
 services/factor/issue107_runner_poll_probe.py
 services/factor/issue107_mixed_workload_probe.py
 ```
+
+`issue107_factor_app.py` is now mandatory for factor-driven capacity scenarios. It refuses startup when factor's configured `DATA_SERVICE_URL` does not match the expected contributor fake data-service target. See `48-factor-target-fail-closed.md`.
 
 ### Data diagnostics
 
@@ -235,6 +238,7 @@ accidentally adding diagnostics to the production commit
 benchmarking a branch that drifted from upstream
 silently overwriting local work
 resetting the wrong database while trying to create a cold benchmark state
+starting factor against the ordinary data-service while believing the fake target is in use
 ```
 
 The helper removes those clerical risks while deliberately leaving the important engineering decisions manual and evidence-driven.
