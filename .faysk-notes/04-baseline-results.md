@@ -16,6 +16,7 @@ Docker:
 CPU:
 RAM:
 Data worker count:
+Factor worker count:
 Other service worker counts:
 DB pool config observed:
 Deployment topology:
@@ -46,7 +47,8 @@ check-consistency:
 | Slow backfill / pool diagnostic | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Fake slow provider — 1 worker | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Fake slow provider — 2 workers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Live macro cold cache | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Live macro cold cache — single caller | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Live macro cold cache — concurrent callers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Live macro warm cache | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Panel 10 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Panel 50 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
@@ -124,11 +126,34 @@ Do not assume a 50/50 split across two workers.
 Macro series requested:
 Data calls:
 Backfills:
-Cold-cache behavior:
+Cold single-caller behavior:
+Cold concurrent-caller behavior:
 Warm-cache behavior:
 Macro degradation/failures:
 HTTP client/connection observations:
 ```
+
+#### Macro cache coalescing/stampede check
+
+```text
+Concurrent factor callers:
+Unique macro cache keys requested:
+Actual _fetch_macro_series network/data fetches:
+Actual /backfill/bars calls attributable to macro:
+Actual /bars calls attributable to macro:
+Duplicate-work ratio = actual fetches / unique keys:
+Pure diagnostic current-main fetch_count (6 same-key callers):
+```
+
+Interpretation:
+
+```text
+sequential unique-key ratio ≈ 1
+but concurrent cold ratio >> 1
+→ H8 evidence
+```
+
+Do not count 18 different FRED series as duplicate work. H8 is specifically about repeated fetches for the **same macro cache key** before first population completes.
 
 ### Factor panel control
 
@@ -158,12 +183,14 @@ Timeframe distribution:
 Warmup bars setting:
 Fresh backfills started during restart:
 Peak overlap:
+Concurrent factor baseline captures:
+Did cold macro requests overlap?:
 Data-service effect:
 ```
 
-This scenario represents a natural current thundering-herd path: startup resumes persisted running runs and each build performs fresh warmup.
+This scenario represents a natural current thundering-herd path: startup resumes persisted running runs and each build performs fresh warmup; successful builds can then capture factor baselines from independent runner tasks.
 
-### Same-key duplication check
+### Same-key backfill duplication check
 
 ```text
 Caller path:
@@ -182,6 +209,7 @@ First error/result class:
 Latency curve:
 DATA_SERVICE_UNREACHABLE count:
 Zero-row/no-progress backfills:
+Macro unique keys vs actual calls:
 ```
 
 ---
@@ -198,6 +226,8 @@ Zero-row/no-progress backfills:
 | provider calls in flight | TBD | TBD | TBD |
 | provider queue depth/wait | TBD | TBD | TBD |
 | client connections/sockets | TBD | TBD | TBD |
+| macro unique keys | TBD | TBD | TBD |
+| macro actual fetches | TBD | TBD | TBD |
 
 ---
 
@@ -257,10 +287,11 @@ Does sustained slowness convert one logical read into multiple physical requests
 - [ ] H1b: DB wait/server slowness reaches factor HTTP deadlines and is mapped to `DATA_SERVICE_UNREACHABLE`
 - [ ] H2: expensive backfill concurrency is independently a bottleneck
 - [ ] H3: factor HTTP connection churn is material
-- [ ] H4: duplicate same-key work outside dashboard is material
+- [ ] H4: duplicate same-key backfill work outside dashboard is material
 - [ ] H5: one provider monopolizes capacity
 - [ ] H6: live-runner synchronization/resume burst materially contributes
 - [ ] H7: event-loop/thread-pool saturation is primary
+- [ ] H8: cold macro cache stampede materially duplicates same-key factor→data work
 
 Evidence:
 
