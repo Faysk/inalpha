@@ -208,6 +208,24 @@ and its cleanup command references the actual temporary helper path.
 
 This is exactly the kind of clerical issue the static readiness pass is meant to catch before runtime.
 
+### Load-probe provider-safety guard
+
+A more important tooling issue was found in the generic `issue107_load_probe.py`: unlike the macro/runner/mixed probes, it originally treated an unavailable contributor state endpoint as an empty observation and could still proceed with Binance backfills.
+
+That meant a wrong `--base-url` could accidentally point the capacity probe at the ordinary data-service and hit a real provider.
+
+The probe now fails closed **before creating any load** unless:
+
+```text
+GET /__issue107/state succeeds
+AND
+fake_venues includes binance
+```
+
+This makes the safety rule executable rather than depending on the contributor remembering the right target.
+
+The timeout-persistence probe was already fail-closed because it requires the contributor state endpoint before sending timed backfills; factor/runner/mixed probes likewise validate the required fake venues.
+
 ---
 
 ## 9. Candidate A correctness guard: overlapping same-key writes
@@ -284,6 +302,7 @@ runner venue/timeframe presets
 fake provider batch semantics
 root/service environment loading
 benchmark DB isolation
+load probes fail closed unless required providers are fake
 ```
 
 The remaining uncertainty is the uncertainty we actually want runtime to answer:
