@@ -61,7 +61,7 @@ Faysk/inalpha
 | `35-psycopg-pool-stats-diagnostic.md` | Direct `AsyncConnectionPool.get_stats()` measurement plan for pool availability, queueing, wait time and errors |
 | `36-safe-full-stack-macro-harness.md` | Real factor→data local-HTTP macro benchmark with fake Binance/FRED providers and cold/warm/same/unique-key controls; where older startup snippets conflict, follow `49-runtime-safety-order.md` |
 | `37-existing-db-http-separation-precedent.md` | Existing live-runner M-1 rule and implementation: short DB read → external HTTP → short DB write, directly matching Candidate A's intended resource ordering |
-| `38-runner-poll-harness.md` | Live-runner-like fresh polling harness, aligned-vs-stagger control and in-flight DB/provider sampling |
+| `38-runner-poll-harness.md` | Live-runner-like fresh poll harness, aligned-vs-stagger control and in-flight DB/provider sampling |
 | `39-mixed-workload-harness.md` | Combined cold factor/macro + runner polling + health/openapi workload used for the issue-level before/after decision gate; factor startup safety is governed by `49-runtime-safety-order.md` |
 | `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus contributor-diagnostic/safety-helper materialization and cleanup workflow for Windows/WSL/Linux |
 | `41-benchmark-db-state-determinism.md` | Dedicated resettable `inalpha_issue107` database and factor-cache/DB-cache discipline so cold/warm and before/after runs are comparable |
@@ -74,21 +74,22 @@ Faysk/inalpha
 | `48-factor-target-fail-closed.md` | Fail-closed factor wrapper so factor/mixed load cannot silently route to the ordinary data-service instead of the fake benchmark target |
 | `49-runtime-safety-order.md` | Authoritative pre-load safety sequence: fake data wrapper → fail-closed factor wrapper → no-load target checker → workload |
 | `50-sustained-load-acceptance.md` | Separates short mechanism probes from sustained p95 evidence and defines O1 cross-sectional, O2 same-key stress and optional O3 stagger acceptance scenarios |
-| `51-sustained-results-template.md` | Empty three-run sustained evidence template with separate latency/error/backlog/provider signals and before→after wording guard |
+| `51-sustained-results-template.md` | Three-run sustained evidence template with separate latency/error/backlog/provider/pool signals, scheduler-lag accounting and before→after wording guard |
+| `52-provider-isolation-and-soak-hardening.md` | Harness review that disables the startup constituent scheduler, blocks non-fake OHLCV registry venues, avoids schedule catch-up bursts and adds provider/pool counter deltas |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
 | `tools/test_factor_live_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold identical live score requests coalesce or duplicate main data fetches |
-| `tools/issue107_slow_data_app.py` | Multi-venue fake provider wrapper with async/thread modes, per-venue counters, per-path HTTP counts, worker PID, sync-thread counters and DB-free pool-state endpoint |
+| `tools/issue107_slow_data_app.py` | Hardened fake provider wrapper: requested OHLCV venues are deterministic fakes, other registered OHLCV venues fail closed, startup constituent scheduler is forced off, and provider/HTTP/thread/pool state is exposed |
 | `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles, worker PID distribution and pool-state samples; fails closed unless Binance is fake |
 | `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence |
 | `tools/issue107_factor_app.py` | Contributor-only factor wrapper that refuses startup unless its configured data-service URL matches the expected local fake target |
-| `tools/issue107_target_check.py` | No-load verifier for data fake venues plus factor→data routing before macro/mixed capacity load |
+| `tools/issue107_target_check.py` | No-load verifier for fake venues, blocked/fake consistency, scheduler isolation and factor→data routing before macro/mixed capacity load |
 | `tools/issue107_factor_macro_probe.py` | Safe full-stack cold/warm factor macro probe with factor→data HTTP, fake-provider and pool-counter deltas |
 | `tools/issue107_runner_poll_probe.py` | Live-runner-like fresh poll probe with aligned/staggered scheduling and peak in-flight pool/provider sampling |
 | `tools/issue107_mixed_workload_probe.py` | Combined factor macro + runner fresh polling + DB/non-DB control workload for issue-level reproduction |
 | `tools/issue107_sustained_mixed_probe.py` | Base bounded soak helper; same-key-heavy by design and retained as H11 stress machinery |
-| `tools/issue107_sustained_acceptance_probe.py` | Acceptance-oriented bounded soak using unique cross-sectional factor symbols by default, explicit same-key control and partial backlog evidence on settle timeout |
+| `tools/issue107_sustained_acceptance_probe.py` | Acceptance-oriented bounded soak using unique cross-sectional factor symbols by default, explicit same-key control, missed-slot accounting, partial backlog evidence and one-worker provider/pool counter deltas |
 | `tools/prepare_issue107_local.ps1` | Windows PowerShell preflight/materialization helper; refuses dirty/drifted/tracked destinations and never applies production changes |
 | `tools/prepare_issue107_local.sh` | Bash/WSL/Linux equivalent of the safe preflight/materialization helper |
 | `tools/issue107_capture_env.ps1` | Creates a local baseline/candidate evidence directory and records non-secret revision/tool/host metadata; never uploads results |
