@@ -46,6 +46,7 @@ Faysk/inalpha
 | `20-candidate-fix-d-factor-http-pooling.md` | Low-priority connection-reuse candidate with explicit bearer-token isolation requirements |
 | `21-adjacent-data-db-lease-audit.md` | Audit of nearby data-service paths that also hold DB capacity across external I/O; explicitly kept out of #107 unless measured |
 | `22-h8-macro-cache-stampede.md` | Cold macro-cache same-key stampede hypothesis and decision gate for possible factor-side single-flight |
+| `23-candidate-a-deep-review.md` | Candidate A transaction, failure-precedence, idempotency and explicit-connection-lifetime review |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression draft: >pool-size provider waits must coexist with responsive DB-backed health |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
