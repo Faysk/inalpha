@@ -13,6 +13,10 @@ The script preserves concrete HTTPX exception types instead of collapsing everyt
 while backfills are blocked so we can distinguish DB-pool starvation from general server/event-loop
 starvation. When the contributor wrapper is used it also records ``X-Issue107-Worker-Pid`` and
 samples the wrapper's DB-free ``/__issue107/state`` endpoint, including Psycopg pool stats.
+
+Safety: before creating any backfill load, the probe requires the contributor state endpoint to
+exist and requires ``binance`` to be listed in ``fake_venues``. Pointing it at the ordinary data
+service therefore fails closed instead of accidentally load-testing a real provider.
 """
 
 from __future__ import annotations
@@ -77,6 +81,35 @@ def _response_code(response: httpx.Response) -> str | None:
 
 def _worker_pid(response: httpx.Response) -> str | None:
     return response.headers.get("X-Issue107-Worker-Pid")
+
+
+async def _strict_state(base_url: str) -> dict[str, Any]:
+    """Require the contributor wrapper before any load is created."""
+    try:
+        async with httpx.AsyncClient(base_url=base_url, timeout=2.0, trust_env=False) as client:
+            response = await client.get("/__issue107/state")
+            response.raise_for_status()
+            body = response.json()
+    except Exception as exc:
+        raise RuntimeError(
+            "unsafe load-probe target: contributor /__issue107/state is unavailable; "
+            "start issue107_slow_data_app.py instead of the ordinary data-service"
+        ) from exc
+
+    if not isinstance(body, dict):
+        raise RuntimeError(f"unsafe load-probe target: unexpected state payload {body!r}")
+
+    fake_venues = {
+        item.strip().lower()
+        for item in str(body.get("fake_venues", "")).split(",")
+        if item.strip()
+    }
+    if "binance" not in fake_venues:
+        raise RuntimeError(
+            "unsafe load-probe target: binance is not faked; "
+            f"configured fake_venues={sorted(fake_venues)}"
+        )
+    return body
 
 
 async def _backfill_one(
@@ -228,6 +261,13 @@ def _print_state_samples(label: str, samples: list[dict[str, Any]]) -> None:
 
 
 async def _run(args: argparse.Namespace) -> None:
+    strict_state = await _strict_state(args.base_url)
+    print(
+        "safety_target "
+        f"pid={strict_state.get('pid')} fake_venues={strict_state.get('fake_venues')} "
+        f"mode={strict_state.get('mode')}"
+    )
+
     token = _token()
     headers = {"Authorization": f"Bearer {token}"}
     limits = httpx.Limits(
