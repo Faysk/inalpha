@@ -51,7 +51,7 @@ Faysk/inalpha
 | `25-pg-stat-activity-diagnostic.md` | DB-side `pg_stat_activity` evidence plan for open transactions retained during fake provider waits |
 | `26-h10-default-executor-contention.md` | Shared `asyncio.to_thread` executor contention hypothesis and async-vs-thread fake-provider experiment |
 | `27-exact-macro-fanout.md` | Exact current default macro shape: 26 factor specs backed by 18 unique FRED series |
-| `28-candidate-a-capacity-decoupling-risk.md` | Guard against “fix DB, overload provider”: provider-concurrency checks after Candidate A |
+| `28-candidate-a-capacity-decoupling-risk.md` | Guard against “fix DB, overload provider” plus same-key completion-order/final-candle correctness checks after Candidate A |
 | `29-runner-resume-factor-burst-shape.md` | Refined restart burst model: factor baseline fan-out depends on timeframe and lineage rather than every runner always requesting the full macro set |
 | `30-cross-service-timeout-budget-mismatch.md` | Nested paper→factor→data timeout-budget mismatch and runtime cancellation questions |
 | `31-candidate-a-project-fit-and-contract-review.md` | Candidate A style precedent, testability, checkout-count trade-off and error-precedence review |
@@ -65,6 +65,7 @@ Faysk/inalpha
 | `39-mixed-workload-harness.md` | Combined cold factor/macro + runner polling + health/openapi workload used for the issue-level before/after decision gate |
 | `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus contributor-diagnostic materialization and cleanup workflow for Windows/WSL/Linux |
 | `41-benchmark-db-state-determinism.md` | Dedicated resettable `inalpha_issue107` database and factor-cache/DB-cache discipline so cold/warm and before/after runs are comparable |
+| `42-runtime-readiness-static-validation.md` | Final static check that diagnostics match current pytest, auth, schemas, venue/timeframe support, environment loading and Candidate A correctness caveats before runtime |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
