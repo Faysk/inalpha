@@ -3,13 +3,18 @@
 This script sends only contributor diagnostic GETs. It does not call /score, /backfill/bars, /bars,
 or any external market-data provider.
 
-Use it immediately before factor-driven macro/mixed capacity probes to prove that:
+Use it immediately before capacity probes to prove the local benchmark target is isolated.
+
+Factor-driven mode verifies:
 
 1. the data target is issue107_slow_data_app with every required venue faked;
 2. the data wrapper has disabled the startup constituent scheduler and blocks non-fake OHLCV venues;
 3. the factor target is issue107_factor_app;
 4. factor's configured data_service_url equals the exact contributor data URL being checked;
 5. macro can optionally be required for macro/mixed scenarios.
+
+Data-only mode (``--data-only``) performs the data-side isolation checks without requiring a running
+factor-service. Use it before runner-only and low-level data probes.
 """
 
 from __future__ import annotations
@@ -58,6 +63,9 @@ async def _run(args: argparse.Namespace) -> None:
         for item in args.required_venues.split(",")
         if item.strip()
     }
+    if not required_venues:
+        raise RuntimeError("--required-venues must contain at least one venue")
+
     missing = required_venues - fake_venues
     if missing:
         raise RuntimeError(
@@ -74,6 +82,27 @@ async def _run(args: argparse.Namespace) -> None:
             "unsafe data target: contributor wrapper did not prove the startup constituent "
             "scheduler is forced disabled"
         )
+
+    fake_bars_per_fetch = int(data.get("fake_bars_per_fetch", 0) or 0)
+    if args.min_fake_bars_per_fetch > 0 and fake_bars_per_fetch < args.min_fake_bars_per_fetch:
+        raise RuntimeError(
+            "misleading data target: fake provider batch is smaller than required for this "
+            f"scenario; current={fake_bars_per_fetch} required={args.min_fake_bars_per_fetch}"
+        )
+
+    print("issue107_data_target_check=PASS")
+    print(f"data_pid={data.get('pid')}")
+    print(f"data_url={data_url}")
+    print(f"fake_venues={','.join(sorted(fake_venues))}")
+    print(f"blocked_venues={','.join(sorted(blocked_venues))}")
+    print(f"required_venues={','.join(sorted(required_venues))}")
+    print("snapshot_scheduler_forced_disabled=true")
+    print(f"fake_bars_per_fetch={fake_bars_per_fetch}")
+
+    if args.data_only:
+        print("issue107_target_check=PASS")
+        print("factor_check=skipped_data_only")
+        return
 
     factor = await _json_get(factor_url, "/__issue107/config")
     configured_data_url = _norm(str(factor.get("data_service_url", "")))
@@ -93,15 +122,9 @@ async def _run(args: argparse.Namespace) -> None:
         raise RuntimeError("factor target has macro_enabled != true")
 
     print("issue107_target_check=PASS")
-    print(f"data_pid={data.get('pid')}")
     print(f"factor_pid={factor.get('pid')}")
-    print(f"data_url={data_url}")
     print(f"factor_url={factor_url}")
     print(f"factor_data_service_url={configured_data_url}")
-    print(f"fake_venues={','.join(sorted(fake_venues))}")
-    print(f"blocked_venues={','.join(sorted(blocked_venues))}")
-    print(f"required_venues={','.join(sorted(required_venues))}")
-    print("snapshot_scheduler_forced_disabled=true")
     print(f"macro_enabled={factor.get('macro_enabled')}")
 
 
@@ -113,6 +136,17 @@ def _parser() -> argparse.ArgumentParser:
         "--required-venues",
         default="binance,fred",
         help="Comma-separated venues that must be replaced by the contributor fake.",
+    )
+    parser.add_argument(
+        "--min-fake-bars-per-fetch",
+        type=int,
+        default=0,
+        help="Optional minimum fake batch size required by the scenario; zero disables this check.",
+    )
+    parser.add_argument(
+        "--data-only",
+        action="store_true",
+        help="Verify only the hardened data target; do not require/query factor-service.",
     )
     parser.add_argument("--require-macro", action="store_true")
     return parser
