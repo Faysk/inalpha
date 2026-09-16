@@ -82,15 +82,16 @@ Faysk/inalpha
 | `56-local-environment-bootstrap.md` | Exact no-load Windows/WSL bootstrap for toolchain, infra, dedicated benchmark DB, migrations and handoff into Stage A |
 | `57-pre-runtime-tooling-audit.md` | Reviews the benchmark machinery itself, layered safety responsibilities, sustained-tool authority and syntax-validation limits before execution |
 | `58-windows-powershell-bootstrap.md` | PowerShell-native setup commands that preserve existing env files and prepare infra/benchmark DB without generating #107 load |
+| `59-issue107-change-lineage.md` | Timeline of mitigations that landed after #107 was opened, separating already-fixed historical causes from the remaining current-main capacity question |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A property regression with pool=2, four simultaneous provider waits and background scheduler isolation |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
 | `tools/test_factor_live_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold identical live score requests coalesce or duplicate main data fetches |
 | `tools/issue107_slow_data_app.py` | Hardened fake provider wrapper: requested OHLCV venues deterministic, other registered OHLCV venues fail closed, startup constituent scheduler forced off, provider/HTTP/thread/pool state exposed |
-| `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles, worker PID distribution and pool-state samples; fails closed unless Binance is fake |
-| `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence |
+| `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles, worker PID distribution and pool-state samples; use only after the data-only no-load target check passes |
+| `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence; now also fails closed on an unsafe data target |
 | `tools/issue107_factor_app.py` | Contributor-only factor wrapper that refuses startup unless its configured data-service URL matches the expected local fake target |
-| `tools/issue107_target_check.py` | No-load verifier for fake venues, blocked/fake consistency, scheduler isolation and factor→data routing before macro/mixed capacity load |
+| `tools/issue107_target_check.py` | No-load verifier for fake venues, blocked/fake consistency, scheduler isolation and factor→data routing; supports data-only mode for runner/low-level probes |
 | `tools/issue107_factor_macro_probe.py` | Safe full-stack cold/warm factor macro probe with factor→data HTTP, fake-provider and pool-counter deltas |
 | `tools/issue107_runner_poll_probe.py` | Live-runner-like fresh poll probe with aligned/staggered scheduling and peak in-flight pool/provider sampling |
 | `tools/issue107_mixed_workload_probe.py` | Combined factor macro + runner fresh polling + DB/non-DB control workload for issue-level reproduction |
