@@ -120,7 +120,7 @@ GET /bars accepted by data-service
 
 This is hypothesis **H1b**. It is stronger than the original generic “data-service is saturated” theory because every step is supported by current code, but it still needs runtime reproduction.
 
-Do not yet claim that timed-out server work continues after client disconnect; cancellation behavior must be observed separately.
+Whether old server work survives after the caller timeout is now separated into runtime hypothesis **H9**. Static inspection is not enough to claim retry overlap.
 
 ### Provider serialization can amplify DB retention
 
@@ -169,7 +169,7 @@ Therefore several concurrent cold requests for the same macro/date key can all m
 
 The cache is known to work **after population**; existing tests cover that sequential hit path. They do not cover simultaneous same-key misses.
 
-This is now hypothesis **H8**:
+This is hypothesis **H8**:
 
 ```text
 cold concurrent live factor calls
@@ -270,7 +270,7 @@ Therefore a new busy/backpressure response cannot be evaluated only at the data-
 - cold macro same-key duplication is frequent/material enough to justify factor-side single-flight;
 - live-runner synchronization is still a significant contributor after current mitigations;
 - fresh ticker overlap materially contributes to the #107 workload;
-- client disconnect leaves timed-out server work alive long enough to amplify pressure.
+- client timeout/disconnect leaves older server/provider work alive long enough to overlap retries (H9).
 
 Do not write PR language that treats any item in the second list as proven until runtime evidence exists.
 
@@ -284,22 +284,28 @@ Do not write PR language that treats any item in the second list as proven until
 .faysk-notes/tools/test_backfill_pool_pressure_draft.py
 ```
 
-It uses a fully fake connector that blocks provider I/O and performs **no external network calls**.
+It uses a fully fake connector and forces its own test pool:
+
+```text
+max_size = 2
+```
 
 Control/pressure cases:
 
 ```text
-9 blocked backfills
-→ 9/10 DB pool slots occupied
+1 blocked backfill
+→ 1/2 DB pool slots retained
 → /health should still acquire the remaining connection
 
-10 blocked backfills
-→ 10/10 DB pool slots occupied
+2 blocked backfills
+→ 2/2 DB pool slots retained
 → /openapi.json should remain responsive
-→ /health should remain blocked until the fake provider releases
+→ /health should remain blocked until fake provider release
 ```
 
-This does not by itself reproduce the full #107 mixed workload. Its purpose is narrower: prove whether current route/resource ordering can starve an unrelated DB-backed endpoint exactly as static inspection predicts.
+This makes the diagnostic independent of future tuning of the normal pool default.
+
+The post-Candidate-A regression draft uses the same controlled-pool idea but starts **4 provider waits against pool max_size=2**. After DB-lease narrowing, all four must reach provider I/O and DB-backed health must still work; current route-level `DBConn` cannot satisfy that property.
 
 ### Macro cache stampede
 
@@ -319,6 +325,25 @@ sequential same-key macro requests
 
 This proves structural duplicate in-flight work if observed, but not production materiality.
 
+### Real-TCP timeout persistence
+
+```text
+.faysk-notes/tools/issue107_slow_data_app.py
+.faysk-notes/tools/issue107_timeout_persistence_probe.py
+```
+
+The fake-provider wrapper now records:
+
+```text
+started / active / completed / cancelled / failed
+```
+
+through a DB-free state endpoint and explicit logs. With a client timeout shorter than fake provider delay, this experiment tells us whether older server work remains active after callers have already timed out.
+
+### DB-side transaction evidence
+
+`25-pg-stat-activity-diagnostic.md` records PostgreSQL-side evidence during the blocked first provider phase. Current static behavior predicts data sessions may appear `idle in transaction` after `latest_bar_ts()` while the application is waiting outside PostgreSQL.
+
 When run locally, preserve results even if they disprove our hypotheses.
 
 ---
@@ -332,16 +357,15 @@ Once the contributor machine has the repository locally:
 2. start unmodified stack / test DB
 3. run existing data/factor tests
 4. run pure factor macro-stampede diagnostic
-5. copy/run the contributor-only DB pool-pressure diagnostic
-6. record whether 9-vs-10 behavior matches H1
-7. establish one-worker service-level diagnostic run
-8. reproduce slow-provider/backfill pressure over real HTTP
-9. inspect DB-pool behavior and request latency
-10. repeat with production-like data WORKERS=2
-11. exercise live factor + macro fan-out (cold single, cold concurrent, warm)
-12. add runner/resume-like traffic only after isolated scenarios are understood
-13. include fresh ticker only if representative workflow actually reaches it materially
-14. record baseline before any production change
+5. run controlled 1-of-2 / 2-of-2 DB pool-pressure diagnostic
+6. establish one-worker real-Uvicorn fake-provider run
+7. capture pg_stat_activity during blocked provider phase
+8. run real-TCP client-timeout persistence diagnostic (H9)
+9. repeat service-level fake-provider pressure with production-like data WORKERS=2
+10. exercise live factor + macro fan-out (cold single, cold concurrent, warm)
+11. add runner/resume-like traffic only after isolated scenarios are understood
+12. include fresh ticker only if representative workflow actually reaches it materially
+13. record complete baseline before any production change
 ```
 
 ---
@@ -367,7 +391,7 @@ none of the above explains failure
 → keep investigating; do not force the planned solution
 ```
 
-Candidate A remains the least contract-changing first fix **if H1 is measured**. H8 does not automatically mean factor should be changed in the same PR.
+Candidate A remains the least contract-changing first fix **if H1 is measured**. H8/H9 do not automatically expand the first PR.
 
 ---
 
