@@ -61,7 +61,7 @@ Faysk/inalpha
 | `35-psycopg-pool-stats-diagnostic.md` | Direct `AsyncConnectionPool.get_stats()` measurement plan for pool availability, queueing, wait time and errors |
 | `36-safe-full-stack-macro-harness.md` | Real factor→data local-HTTP macro benchmark with fake Binance/FRED providers and cold/warm/same/unique-key controls; where older startup snippets conflict, follow `49-runtime-safety-order.md` |
 | `37-existing-db-http-separation-precedent.md` | Existing live-runner M-1 rule and implementation: short DB read → external HTTP → short DB write, directly matching Candidate A's intended resource ordering |
-| `38-runner-poll-harness.md` | Live-runner-like fresh poll harness, aligned-vs-stagger control and in-flight DB/provider sampling |
+| `38-runner-poll-harness.md` | Live-runner-like fresh poll harness, aligned/stagger control and in-flight DB/provider sampling |
 | `39-mixed-workload-harness.md` | Combined cold factor/macro + runner polling + health/openapi workload used for the issue-level before/after decision gate; factor startup safety is governed by `49-runtime-safety-order.md` |
 | `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus hardened contributor diagnostics/safety-helper materialization and cleanup workflow |
 | `41-benchmark-db-state-determinism.md` | Dedicated resettable `inalpha_issue107` database and factor-cache/DB-cache discipline so cold/warm and before/after runs are comparable |
@@ -80,6 +80,8 @@ Faysk/inalpha
 | `54-sustained-child-task-cancellation.md` | Acceptance-harness guard that explicitly cancels/drains spawned request tasks so settle-timeout evidence is not contaminated by orphan local load |
 | `55-pre-runtime-freeze.md` | Static-preparation freeze and cross-document handoff: runtime is now the next evidence gate unless upstream/scope/tooling materially changes |
 | `56-local-environment-bootstrap.md` | Exact no-load Windows/WSL bootstrap for toolchain, infra, dedicated benchmark DB, migrations and handoff into Stage A |
+| `57-pre-runtime-tooling-audit.md` | Reviews the benchmark machinery itself, layered safety responsibilities, sustained-tool authority and syntax-validation limits before execution |
+| `58-windows-powershell-bootstrap.md` | PowerShell-native setup commands that preserve existing env files and prepare infra/benchmark DB without generating #107 load |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A property regression with pool=2, four simultaneous provider waits and background scheduler isolation |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
@@ -94,8 +96,8 @@ Faysk/inalpha
 | `tools/issue107_mixed_workload_probe.py` | Combined factor macro + runner fresh polling + DB/non-DB control workload for issue-level reproduction |
 | `tools/issue107_sustained_mixed_probe.py` | Base bounded soak helper; same-key-heavy by design and retained as H11 stress machinery |
 | `tools/issue107_sustained_acceptance_probe.py` | Acceptance-oriented bounded soak using unique cross-sectional factor symbols by default, explicit same-key control, missed-slot accounting, child-task draining, partial backlog evidence and one-worker provider/pool counter deltas |
-| `tools/prepare_issue107_local.ps1` | Windows PowerShell preflight/materialization helper; refuses dirty/drifted/tracked destinations and never applies production changes |
-| `tools/prepare_issue107_local.sh` | Bash/WSL/Linux equivalent of the safe preflight/materialization helper |
+| `tools/prepare_issue107_local.ps1` | Windows PowerShell preflight/materialization helper; refuses dirty/drifted/tracked destinations, syntax-checks materialized Python/PowerShell tooling and never applies production changes |
+| `tools/prepare_issue107_local.sh` | Bash/WSL/Linux equivalent with source/destination consistency plus Python/Bash syntax checks |
 | `tools/issue107_capture_env.ps1` | Creates a local baseline/candidate evidence directory and records non-secret revision/tool/host metadata; never uploads results |
 | `tools/issue107_benchmark_db.ps1` | PowerShell verify/reset helper hard-coded to the dedicated `inalpha_issue107` DB; resets only `public.bars` after safety checks |
 | `tools/issue107_benchmark_db.sh` | Bash/WSL equivalent of the dedicated benchmark DB verify/reset helper |
