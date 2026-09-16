@@ -1,126 +1,105 @@
 # Issue #107 — Runtime Readiness Static Validation
 
-**Status:** completed static preflight against current reviewed upstream before local execution.
+**Status:** completed static preflight against current reviewed upstream before local execution.  
+**Reviewed upstream:** `ed01be9056776c107ab76a404c328a4fed19f529`.
 
-**Purpose:** verify that the prepared diagnostics actually match current schemas, auth rules, service test conventions and supported venue/timeframe combinations before spending time debugging false negatives on the contributor machine.
+**Purpose:** verify that prepared diagnostics match current schemas, auth rules, test conventions, venue/timeframe support, service startup behavior and benchmark-safety requirements before runtime.
 
-This note does **not** replace runtime execution. It only reduces avoidable harness/setup mistakes.
-
----
-
-## 1. Reviewed upstream baseline
-
-At this pass the reviewed upstream `main` is still:
-
-```text
-ed01be9056776c107ab76a404c328a4fed19f529
-```
-
-The contribution branch must still be compared to fresh `upstream/main` immediately before execution. If upstream moves, this validation becomes historical and the sensitive paths must be re-read.
+This note does **not** replace execution. It reduces avoidable false negatives and unsafe harness behavior.
 
 ---
 
-## 2. Data pytest integration shape matches our diagnostics
+## 1. Revision state
 
-Current `services/data/pyproject.toml` uses:
+At this pass:
 
 ```text
-pytest-asyncio
-asyncio_mode = auto
-strict markers
-integration marker declared
+mirror29/inalpha:main = ed01be9056776c107ab76a404c328a4fed19f529
+Faysk/main            = same reviewed baseline
+fix/data-service-saturation = identical to Faysk/main
+production commits on contribution branch = 0
 ```
 
-Therefore the contributor async diagnostics can be ordinary `async def test_*` functions with:
+Before execution, fetch fresh `upstream/main` again. If upstream moved, this validation becomes historical and #107-sensitive paths must be re-read before comparing numbers.
 
-```python
-pytestmark = pytest.mark.integration
+---
+
+## 2. Data pytest integration model matches diagnostics
+
+Current data tests use:
+
+```text
+pytest-asyncio / asyncio_mode=auto
+integration marker
+real application lifespan
+real shared DB pool
+connector registry replacement with fakes
 ```
 
-without adding per-test `@pytest.mark.asyncio` decorators.
-
-Current data tests also use the **real application lifespan / real shared DB pool** and replace connectors through `connectors._base._REGISTRY`.
-
-That matches the design of:
+That matches the intended model of:
 
 ```text
 test_backfill_pool_pressure_draft.py
 test_candidate_a_regression_draft.py
 ```
 
-The diagnostics are not inventing a different application wiring model merely to make H1 easier to prove.
+The tests are not creating a completely artificial dependency graph merely to demonstrate H1.
+
+The post-Candidate-A regression additionally patches the constituent scheduler's parsed index list to empty so local root environment state cannot create unrelated background provider work during the property test.
 
 ---
 
-## 3. Authentication assumptions are valid
+## 3. Authentication assumptions
 
-`data-service` auth requires:
+Data-service requires a valid bearer JWT with signature/expiry and `sub`.
 
-```text
-Authorization: Bearer <JWT>
-valid configured HMAC algorithm
-valid signature/expiry
-sub claim
-```
+The contributor tools generate normal local service-style JWTs using the shared local `JWT_SECRET`. They do not embed secrets in notes/results.
 
-`email` is optional.
+Factor read routes receive the probe token and the normal FactorEngine/DataClient path forwards it to data-service. This exercises current factor→data auth propagation instead of bypassing it.
 
-It explicitly rejects `token_use=session`, but normal service-style JWTs without that claim are accepted.
-
-Therefore the generated contributor probe tokens containing `sub` + `exp` (and optional email/iat) match the current API auth contract.
-
-The factor service itself does not require auth for read-only factor routes, but it extracts an incoming bearer token and forwards it to data-service. Supplying the same contributor JWT to factor therefore exercises the real factor→data auth propagation instead of bypassing it.
+The factor fail-closed wrapper changes routing verification only; it does not relax production auth behavior.
 
 ---
 
-## 4. Factor probe request/response shapes match current schemas
+## 4. Factor request/response schemas match probes
 
-Current `/catalog` returns factor entries containing:
+Current `/catalog` exposes fields used by macro selection:
 
 ```text
 factor_id
 source
 available
-...
 ```
 
-So the macro probes' selection rule:
-
-```text
-source == "macro"
-available == true
-```
-
-matches the live `CatalogResponse` shape.
-
-Current `/score` accepts the exact fields used by the probes:
+Current `ScoreRequest` accepts:
 
 ```text
 venue
 symbol
 timeframe
+as_of
 lookback_bars
 horizon_bars
 quantiles
 factor_ids
 ```
 
-and returns:
+Current `ScoreResponse` exposes:
 
 ```text
 bars_used
 factors
 ```
 
-which are the fields collected by the contributor tooling.
+The sustained O1 tool can therefore vary symbols across concurrent `/score` requests without violating schema semantics. `symbol` is an ordinary required string and synthetic Binance-format keys are accepted by the fake connector path.
 
-The probes intentionally use explicit macro `factor_ids` when isolating macro fan-out. This still causes the normal main-price dataframe fetch because `_score_with_series()` always obtains the instrument bars needed to score the requested factors.
+The macro probes intentionally pass explicit macro factor IDs to isolate macro fan-out while retaining the normal instrument-price fetch required by scoring.
 
 ---
 
-## 5. Runner preset timeframes are supported
+## 5. Runner venue/timeframe presets are valid
 
-The runner-like workload uses `1h` for:
+Runner-like workload uses `1h` for:
 
 ```text
 binance
@@ -128,194 +107,306 @@ baostock
 yfinance
 ```
 
-Current backfill routing supports that combination:
+Current `/backfill/bars` routing supports these combinations.
 
-- Baostock explicitly supports `1h` and caps minute-level lookback to 60 days;
-- yfinance supports `1h` with a recent-history window;
-- Binance supports `1h` through its connector timeframe table.
+The simulated lookback is short enough not to intentionally trip Baostock's 1h lookback cap or other long-history constraints.
 
-The simulated live-runner lookback is only:
+The Japanese examples correctly use `yfinance` symbols such as `7203.T`; the current Baostock connector explicitly says JP routing should use yfinance after the old AkShare Japan path was removed.
 
-```text
-max(5 × timeframe, 7200s)
-```
-
-so the fake workload does not intentionally trip Baostock/yfinance long-lookback restrictions.
-
-This validates the preset as a control-flow reproduction rather than a collection of requests that would fail validation before reaching the provider phase.
+Therefore runner requests should reach the fake provider phase rather than fail validation for an invalid venue/timeframe combination.
 
 ---
 
-## 6. Fake provider batch size is necessary and now enforced
+## 6. Fake-provider batch size
 
-`/backfill/bars` fetches in batches up to 1000 rows and advances the cursor from the final returned timestamp.
+`/backfill/bars` advances its cursor from the final provider row and fetches up to 1000 rows per batch.
 
-A fake connector returning one row for a long factor window would cause hundreds of artificial provider loops and benchmark the fake implementation instead of #107.
+Long factor windows with a fake that returns only one row would manufacture hundreds of provider loops.
 
-For factor/runner/mixed workloads we therefore require:
+For factor/mixed/sustained work the harness therefore requires:
 
 ```text
-ISSUE107_FAKE_BARS_PER_FETCH=1000
+ISSUE107_FAKE_BARS_PER_FETCH >= 1000
 ```
 
-The runner/mixed preparation has been tightened so low fake batch counts are rejected rather than silently inflating provider-call counts.
+The probes fail before load when this condition is not satisfied.
+
+This keeps the benchmark focused on Inalpha concurrency rather than fake-provider pagination artifacts.
 
 ---
 
-## 7. Shared environment/JWT loading is compatible with service-local tools
+## 7. Environment loading and dedicated DB
 
-`inalpha_shared.Settings` loads configuration from:
+Root/service settings allow process environment variables to override root `.env` values.
 
-```text
-<repo-root>/.env
-then
-./.env
-```
-
-with environment variables taking precedence.
-
-That means probes materialized under `services/factor/` can use the same root `JWT_SECRET` as the running factor/data services without duplicating secrets into contributor files.
-
-For the benchmark database we still explicitly export:
+The runtime plan uses that to pin:
 
 ```text
-DATABASE_URL=.../inalpha_issue107
+DATABASE_URL → inalpha_issue107
+DATA_SERVICE_URL → contributor fake data target
+ISSUE107_EXPECT_DATA_URL → same fake data target
 ```
 
-so there is no ambiguity about which database receives/reset bars.
+The DB reset helpers are hard-coded to `inalpha_issue107` and reset only `public.bars` after verifying the connected DB/table.
+
+A factor restart clears process cache only. DB-cold state still requires the dedicated bars reset.
 
 ---
 
-## 8. Preflight helper issue found and corrected
+## 8. Important safety gap found: normal data lifespan can run background provider work
 
-The PowerShell materialization helper previously ended by telling the contributor to read:
-
-```text
-.faysk-notes/11-local-test-runbook.md
-```
-
-as though that file existed in the working tree on `fix/data-service-saturation`.
-
-It does not: the notes intentionally stay on `notes/issue-107`.
-
-The helper now prints the correct non-merge command:
-
-```powershell
-git show origin/notes/issue-107:.faysk-notes/11-local-test-runbook.md
-```
-
-and its cleanup command references the actual temporary helper path.
-
-This is exactly the kind of clerical issue the static readiness pass is meant to catch before runtime.
-
-### Load-probe provider-safety guard
-
-A more important tooling issue was found in the generic `issue107_load_probe.py`: unlike the macro/runner/mixed probes, it originally treated an unavailable contributor state endpoint as an empty observation and could still proceed with Binance backfills.
-
-That meant a wrong `--base-url` could accidentally point the capacity probe at the ordinary data-service and hit a real provider.
-
-The probe now fails closed **before creating any load** unless:
+Static review of current `data.main` + `scheduler.py` found:
 
 ```text
-GET /__issue107/state succeeds
-AND
-fake_venues includes binance
+ConstituentSnapshotScheduler.start()
+→ when tracked indices exist
+→ create _loop()
+→ _loop immediately calls _tick()
+→ provider-backed constituent catch-up can run before first sleep
 ```
 
-This makes the safety rule executable rather than depending on the contributor remembering the right target.
+`CONSTITUENT_SNAPSHOT_INDICES` defaults empty in current DataSettings, so ordinary default dev startup is safe from this scheduler. But a contributor's existing root `.env` could legitimately enable it.
 
-The timeout-persistence probe was already fail-closed because it requires the contributor state endpoint before sending timed backfills; factor/runner/mixed probes likewise validate the required fake venues.
+A load harness cannot depend on that accidental local setting.
+
+The contributor `issue107_slow_data_app.py` now sets:
+
+```text
+CONSTITUENT_SNAPSHOT_INDICES=""
+```
+
+**before importing `inalpha_data.main`**, ensuring settings are constructed with the scheduler disabled.
+
+`/__issue107/state` reports:
+
+```text
+snapshot_scheduler_forced_disabled=1
+```
+
+and `issue107_target_check.py` requires it before factor/mixed/sustained load.
+
+This is benchmark-only isolation; production scheduler behavior is unchanged.
 
 ---
 
-## 9. Candidate A correctness guard: overlapping same-key writes
+## 9. Provider isolation hardened beyond required fake list
 
-Current persistence uses unconditional:
+Earlier wrapper logic replaced only venues explicitly named in `ISSUE107_FAKE_VENUES`.
 
-```sql
-ON CONFLICT (...) DO UPDATE
-```
+That protected intended requests but left other normally registered OHLCV connectors real.
 
-for OHLCV rows.
-
-So concurrent same-key backfills can already do:
+The wrapper now runs the normal lifespan for real DB/startup fidelity, then rewrites the OHLCV registry:
 
 ```text
-request A reads same latest timestamp
-request B reads same latest timestamp
-A and B fetch overlapping provider windows
-whichever DB write completes last wins for duplicate candles
+explicitly requested workload venue
+→ SlowIssue107Connector
+
+other registered OHLCV venue
+→ BlockedIssue107Connector
+→ raises before provider I/O
 ```
 
-This is an existing concurrency class, not a new Candidate A bug.
-
-But Candidate A can let more provider work coexist because DB capacity is no longer the accidental admission limit. Therefore if H4/same-key duplication is material in runtime results, the before/after review must check that we did not turn a rare overlapping-write condition into a common one.
-
-The latest candle deserves particular attention because the route intentionally re-fetches it to replace a previously forming candle.
-
-Decision remains evidence-driven:
+The diagnostic state exposes both:
 
 ```text
-same-key duplication immaterial
-→ keep PR1 focused
-
-same-key duplication material / final-candle completion inversion observed
-→ add a focused correctness diagnostic before shipping
-→ evaluate coalescing/admission only then
+fake_venues
+blocked_venues
 ```
 
-Do not preemptively add generic single-flight.
+The target checker refuses a configuration where a required workload venue is missing from fake venues or overlaps the blocked list.
+
+This isolation applies to the OHLCV/backfill connector registry used by #107. It is not a generic sandbox for every unrelated data-service endpoint; benchmark tools remain constrained to documented routes.
 
 ---
 
-## 10. Two-worker Baostock caveat
+## 10. Factor→data routing fails closed
 
-Current repository production topology uses two data workers, but the Baostock connector source contains an explicit caution around its persistent Baostock login/session state and says that path is not fork-safe, recommending one worker or non-preloaded worker startup.
+A separate safety gap was already fixed: checking fake `--data-url` was insufficient if factor itself still pointed to ordinary `:8001`.
 
-Separately, its A-share K-line path is protected by a process-local async source lock and timeout logic.
-
-Our fake two-worker benchmark deliberately replaces `baostock` with a local fake. Therefore it is valid for measuring **data-service pool/request capacity under two workers**, but it cannot prove real Baostock session/fork correctness under that topology.
-
-Do not write a PR claim such as:
+`issue107_factor_app.py` now refuses startup unless:
 
 ```text
-A-share provider behavior is proven safe with 2 workers
+FactorSettings.data_service_url == ISSUE107_EXPECT_DATA_URL
 ```
 
-from fake-provider results.
+and exposes only non-secret routing metadata at `GET /__issue107/config`.
 
-If the representative #107 result depends materially on the real A-share path, do a low-volume connector verification or ask the maintainer about the actual deployment/process start model. Keep that separate from load testing so we do not stress public data sources.
+`issue107_target_check.py` verifies:
+
+```text
+data contributor endpoint exists
+required fake/blocked state is safe
+scheduler isolation active
+factor contributor endpoint exists
+factor configured URL == checked data URL
+factor expected URL == checked data URL
+macro enabled where required
+```
+
+Only `issue107_target_check=PASS` permits factor-driven load.
 
 ---
 
-## 11. What is now runtime-ready
+## 11. Sustained load generator review
 
-Static compatibility has been checked for:
+The first sustained helper had two limitations:
+
+1. same-key factor requests per cycle were useful H11 stress but not the canonical cross-sectional shape;
+2. a delayed open-loop scheduler could catch up old slots close together and create an artificial burst.
+
+The acceptance-oriented tool now uses:
 
 ```text
-branch/SHA preflight
-pytest async/marker behavior
-real app lifespan + registry fake injection
-auth token shape
-factor catalog/score schema fields
+--factor-symbol-mode unique  # default O1
+--factor-symbol-mode same    # O2 stress control
+```
+
+and never replays a slot missed by at least one whole cycle interval.
+
+It reports separately:
+
+```text
+cycles_skipped_pending_cap
+cycles_skipped_schedule_lag
+cycles_pending_after_settle
+cycle_task_errors
+```
+
+Material schedule-lag skips are a harness/machine warning, not automatically service capacity evidence.
+
+---
+
+## 12. Sustained moved-bottleneck metrics
+
+The O-stage acceptance probe now captures before/after data state and prints one-worker deltas for:
+
+```text
+POST backfill / GET bars counts
+provider start/completion/cancel/fail totals
+per-venue provider totals
+thread started/completed
+DB pool requests/queued/wait-ms/errors/usage-ms
+```
+
+and samples provider/pool/HTTP in-flight peaks throughout the run.
+
+For two workers, process-local state cannot be treated as service-global. The probe warns on before/after PID mismatch; production-like confirmation uses per-PID evidence plus client-visible latency/errors.
+
+This closes a measurement gap in the moved-bottleneck rule:
+
+```text
+DB failures improve
+but provider failures increase
+→ not automatically success
+```
+
+---
+
+## 13. Percentile claim guard
+
+Issue #107 asks for controlled p95 but supplies no numeric p95 threshold.
+
+Static readiness therefore defines only the measurement discipline:
+
+```text
+30s smoke
+→ stable longer run (e.g. 60s)
+→ at least 3 repetitions
+→ preserve all repetitions
+→ separate percentiles by operation
+```
+
+Do not invent a numeric SLO in the PR.
+
+D/N short samples can report observed latency but do not support a strong sustained p95 claim.
+
+---
+
+## 14. Candidate A static revalidation
+
+Current main still declares route-level:
+
+```text
+backfill_bars(..., db: DBConn, ...)
+```
+
+and the route uses that same lease for `latest_bar_ts`, external provider waits and `insert_bars` batches.
+
+Shared infrastructure already exposes public `get_conn()`; no `_shared` code change is needed for Candidate A.
+
+`insert_bars()` explicitly commits each batch, so current backfill is not one route-wide atomic transaction. Narrowing DB leases would preserve the existing per-batch durability boundary.
+
+Existing backfill integration tests start the real lifespan/shared pool and replace registry connectors, so explicit `get_conn()` inside the route remains structurally compatible with test wiring.
+
+The post-fix regression has been hardened to disable the constituent scheduler and test the property with pool=2/four blocked provider requests.
+
+Full reasoning is in `53-candidate-a-current-main-revalidation.md`.
+
+Candidate A remains **unselected** until H1 is reproduced and material under representative workload.
+
+---
+
+## 15. Same-key overlap / correctness guard remains open
+
+Current persistence uses unconditional `ON CONFLICT ... DO UPDATE`.
+
+Concurrent same-key backfills can already fetch overlapping windows; Candidate A could make concurrent provider access more frequent by removing DB capacity as an accidental gate.
+
+If H4 shows material same-key overlap, run deterministic completion-inversion correctness evidence before deciding whether single-flight/coalescing is necessary.
+
+If overlap is immaterial, keep PR1 focused.
+
+Do not preemptively add a generic lock.
+
+---
+
+## 16. Two-worker Baostock caveat
+
+Production data compose uses two workers, while current Baostock source documents caveats around persistent Baostock login/session state and process/fork behavior. Its A-share market fetch path also has process-local source throttling.
+
+Our fake two-worker benchmark is valid for data-service process/pool/request-capacity confirmation, but it does **not** prove real Baostock provider session correctness at two workers.
+
+Do not turn fake-provider capacity evidence into a claim about real provider fork safety.
+
+---
+
+## 17. What is now statically ready
+
+Checked/prepared:
+
+```text
+branch/SHA isolation
+data/factor test wiring
+auth/JWT propagation
+factor catalog/score schema
 runner venue/timeframe presets
-fake provider batch semantics
-root/service environment loading
-benchmark DB isolation
-load probes fail closed unless required providers are fake
+fake batch semantics
+root/service env precedence
+dedicated benchmark DB/reset safety
+startup constituent scheduler isolation
+unexpected OHLCV venue blocking
+factor→data fail-closed routing
+no-load target checker
+short H1/H8/H9/H10/H11 diagnostics
+macro/runner/mixed workloads
+O1/O2 sustained workload shape
+open-loop missed-slot handling
+provider/DB moved-bottleneck counters
+Candidate A current-main compatibility
 ```
 
-The remaining uncertainty is the uncertainty we actually want runtime to answer:
+Still intentionally unproven until contributor runtime:
 
 ```text
-H1   does provider wait materially starve DB capacity?
-H1b  does that wait cross caller deadlines and become DATA_SERVICE_UNREACHABLE?
+H1   provider wait materially starves DB capacity?
+H1b  does that become caller timeout/retry/DATA_SERVICE_UNREACHABLE?
 H6   does runner alignment materially amplify pressure?
 H8   is macro same-key cold duplication material end-to-end?
-H9   does timed-out client work survive long enough to overlap retries?
+H9   does timed-out client work overlap retries?
 H10  does thread-backed provider work become a first constraint?
 H11  is whole-score cold stampede material end-to-end?
-H4   is cross-service/same-key duplicate backfill material enough to affect correctness/capacity?
+H4   is same-key duplicate refresh material enough for capacity/correctness?
+O1   does representative sustained mixed load reproduce the issue?
 ```
 
-That is the correct point to stop static speculation and start executing the prepared baseline.
+That is the intended static stopping point: further production design without runtime numbers would be speculation rather than progress.
