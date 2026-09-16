@@ -62,7 +62,9 @@ Do not automatically reset/rebase if this is false. Inspect first.
 
 ## 3. Ordinary repository dependencies
 
-Follow `CONTRIBUTING.md` rather than introducing a contributor-specific dependency layout:
+Follow `CONTRIBUTING.md` rather than introducing a contributor-specific dependency layout.
+
+### Bash / WSL
 
 ```bash
 cd packages/orchestration
@@ -76,6 +78,25 @@ done
 cp .env.example .env
 cp infra/.env.example infra/.env
 ```
+
+### PowerShell
+
+```powershell
+Push-Location packages/orchestration
+pnpm i
+Pop-Location
+
+foreach ($service in @("data", "paper", "research", "factor", "evolver")) {
+    Push-Location "services/$service"
+    uv sync
+    Pop-Location
+}
+
+Copy-Item .env.example .env
+Copy-Item infra/.env.example infra/.env
+```
+
+If `.env` files already exist, inspect them instead of blindly overwriting local configuration.
 
 For this issue we later exercise mainly `data` and `factor`, but keeping the repository's documented setup avoids an environment that only works for our harness.
 
@@ -198,6 +219,8 @@ When the shell/session is restarted, re-export the benchmark `DATABASE_URL` befo
 
 Before materializing or running any issue-specific load tool, verify infrastructure and schema only.
 
+### Bash / WSL
+
 From `infra/`:
 
 ```bash
@@ -205,6 +228,15 @@ docker compose ps
 docker compose exec -T postgres \
   psql -U quant -d inalpha_issue107 -Atc \
   "SELECT current_database(), coalesce(to_regclass('public.bars')::text, '');"
+```
+
+### PowerShell
+
+From `infra/`:
+
+```powershell
+docker compose ps
+docker compose exec -T postgres psql -U quant -d inalpha_issue107 -Atc "SELECT current_database(), coalesce(to_regclass('public.bars')::text, '');"
 ```
 
 Expected database identity:
