@@ -13,6 +13,10 @@ Prove or falsify one narrow mechanism from static code inspection:
     -> enough concurrent backfills can starve unrelated DB-backed endpoints
 
 The connector is fully fake/blocking. No external provider is contacted.
+
+The pressure case also probes ``/openapi.json`` as a non-DB control. If OpenAPI stays responsive
+while ``/health`` blocks, that separates DB-pool starvation from generic event-loop/HTTP-server
+starvation.
 """
 
 from __future__ import annotations
@@ -124,11 +128,11 @@ async def test_nine_blocked_backfills_leave_capacity_for_health(
     assert all(r.status_code == 200 for r in responses)
 
 
-async def test_ten_blocked_backfills_starve_health_until_provider_releases(
+async def test_ten_blocked_backfills_starve_db_but_not_event_loop(
     app_with_overrides: Any,
     auth_headers: dict[str, str],
 ) -> None:
-    """Diagnostic: 10 blocked backfills occupy the default 10-connection process pool."""
+    """Diagnostic: full DB pool blocks /health while a non-DB endpoint stays responsive."""
     from inalpha_data.connectors import _base as connectors_base
 
     connector = _BlockingConnector(expected_in_flight=10)
@@ -147,10 +151,16 @@ async def test_ten_blocked_backfills_starve_health_until_provider_releases(
             count=10,
         )
 
+        # Non-DB control: the event loop/ASGI stack should still answer quickly while all
+        # database connections are retained by the blocked backfill requests.
+        openapi = await asyncio.wait_for(client.get("/openapi.json"), timeout=0.5)
+        assert openapi.status_code == 200
+
         health_task = asyncio.create_task(client.get("/health"))
         try:
             # Shield keeps the request alive after the diagnostic timeout. If this times out
-            # while nine backfills do not, the behavior is consistent with pool starvation.
+            # while OpenAPI remains responsive, the behavior is consistent with DB-pool
+            # starvation rather than generic event-loop starvation.
             with pytest.raises(TimeoutError):
                 await asyncio.wait_for(asyncio.shield(health_task), timeout=0.5)
         finally:
