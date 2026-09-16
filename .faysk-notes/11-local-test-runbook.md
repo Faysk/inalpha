@@ -1,44 +1,53 @@
 # Issue #107 — Local Baseline Test Runbook
 
-**Purpose:** exact steps to run later on the contributor machine without improvising setup or touching production behavior first.
+**Purpose:** authoritative runtime sequence for issue #107. Avoid improvising setup, contaminating the benchmark with persistent cache state, or touching production behavior before the baseline selects a fix.
 
-This is contributor-only documentation. Commands are based on the repository's current `CONTRIBUTING.md`, test fixtures, and dev compose files.
+Contributor-only documentation. Diagnostics copied from `notes/issue-107` must remain untracked.
 
 ---
 
-## 1. Safety / branch check
+## 1. Branch / SHA safety gate
 
-Work only on:
+Work on:
 
 ```text
 Faysk/inalpha:fix/data-service-saturation
 ```
 
-Before setup:
+Before any runtime work:
 
 ```bash
 git status --short
-git fetch upstream
-git checkout fix/data-service-saturation
-git reset --hard upstream/main
+git fetch upstream main
+git fetch origin notes/issue-107
+git branch --show-current
 git rev-parse HEAD
+git rev-parse upstream/main
 ```
 
-Expected reviewed baseline at the time these notes were prepared:
+Requirements:
+
+```text
+branch = fix/data-service-saturation
+working tree = clean before diagnostics are materialized
+HEAD == upstream/main
+```
+
+Reviewed upstream SHA when this runbook was prepared:
 
 ```text
 ed01be9056776c107ab76a404c328a4fed19f529
 ```
 
-If upstream has moved, stop and re-review the #107-sensitive files before using old benchmark conclusions.
+If upstream has moved, stop and re-review the #107-sensitive code paths first. Do not silently `reset --hard` over contributor work.
 
-Do **not** commit contributor diagnostics copied from the notes branch.
+`40-local-preflight-helper.md` contains safe PowerShell/Bash helpers that perform these checks and materialize the known diagnostics without applying a production patch.
 
 ---
 
-## 2. Tool versions to record
+## 2. Record environment
 
-Capture these in the baseline notes:
+Save:
 
 ```bash
 git --version
@@ -59,13 +68,13 @@ RAM
 Docker resource limits if explicitly configured
 ```
 
-Performance numbers are only comparable when the execution environment is known.
+Performance numbers are not meaningful without the execution environment and worker topology.
 
 ---
 
-## 3. Official local dependency setup
+## 3. Repository dependency setup
 
-The repository's documented setup is:
+Follow current `CONTRIBUTING.md`:
 
 ```bash
 cd packages/orchestration && pnpm i && cd ../..
@@ -75,336 +84,296 @@ done
 cp .env.example .env
 cp infra/.env.example infra/.env
 (cd infra && docker compose up -d)
-(cd infra/migrations && uv sync && uv run alembic upgrade head)
 ```
 
-The current local infra example sets:
-
-```text
-POSTGRES_USER=quant
-POSTGRES_PASSWORD=devpass
-POSTGRES_DB=inalpha
-POSTGRES_PORT=5433
-```
-
-This matches the data test fixture's default test DB URL:
-
-```text
-postgresql+psycopg://quant:devpass@localhost:5433/inalpha
-```
-
-Do not silently change the database port/password between setup and tests.
+Do not start all application services with `scripts/dev.sh` for the first diagnostic. We want explicit one-worker/two-worker service processes later.
 
 ---
 
-## 4. Pre-change baseline checks
+## 4. Create a dedicated benchmark database
 
-Before running any new #107 diagnostic, prove the current checkout is healthy.
+Use:
 
-### Required project consistency
+```text
+inalpha_issue107
+```
+
+rather than repeatedly clearing the normal developer database.
+
+See `41-benchmark-db-state-determinism.md` for the exact create/reset commands.
+
+Recommended URL with repository defaults:
+
+```text
+postgresql+psycopg://quant:devpass@localhost:5433/inalpha_issue107
+```
+
+Apply migrations to that DB:
+
+### Bash / WSL
+
+```bash
+export ISSUE107_DATABASE_URL='postgresql+psycopg://quant:devpass@localhost:5433/inalpha_issue107'
+(
+  cd infra/migrations
+  DATABASE_URL="$ISSUE107_DATABASE_URL" uv sync
+  DATABASE_URL="$ISSUE107_DATABASE_URL" uv run alembic upgrade head
+)
+export DATABASE_URL="$ISSUE107_DATABASE_URL"
+```
+
+### PowerShell
+
+```powershell
+$env:ISSUE107_DATABASE_URL = 'postgresql+psycopg://quant:devpass@localhost:5433/inalpha_issue107'
+Push-Location infra/migrations
+uv sync
+$oldDb = $env:DATABASE_URL
+$env:DATABASE_URL = $env:ISSUE107_DATABASE_URL
+uv run alembic upgrade head
+Pop-Location
+$env:DATABASE_URL = $env:ISSUE107_DATABASE_URL
+```
+
+The benchmark report must distinguish:
+
+```text
+factor process cache = cold/warm
+data DB bars          = cold/warm
+```
+
+A factor restart alone does not make the data DB cold.
+
+---
+
+## 5. Pre-change repository checks
+
+With `DATABASE_URL` pointing to the dedicated benchmark DB:
+
+### Consistency
 
 ```bash
 bash scripts/check-consistency.sh
 ```
 
-### Data service
+### Data
 
 ```bash
-cd services/data
-uv run ruff check .
-uv run pytest
-cd ../..
+(cd services/data && uv run ruff check . && uv run pytest)
 ```
 
-### Factor service
+### Factor
 
 ```bash
-cd services/factor
-uv run ruff check .
-uv run pytest
-cd ../..
+(cd services/factor && uv run ruff check . && uv run pytest)
+```
+
+Record command, exit code, pass/fail/skip counts, runtime and unexpected warnings.
+
+If current upstream already fails, preserve the output separately. Do not fix unrelated failures inside #107 unless they prevent the investigation.
+
+---
+
+## 6. Materialize contributor diagnostics
+
+Preferred: use `40-local-preflight-helper.md`.
+
+It creates only these untracked files:
+
+```text
+services/factor/tests/test_issue107_macro_stampede_local.py
+services/factor/tests/test_issue107_live_cache_stampede_local.py
+services/data/tests/test_issue107_pool_pressure_local.py
+services/data/issue107_slow_data_app.py
+services/data/issue107_load_probe.py
+services/data/issue107_timeout_persistence_probe.py
+services/factor/issue107_factor_macro_probe.py
+services/factor/issue107_runner_poll_probe.py
+services/factor/issue107_mixed_workload_probe.py
+```
+
+It deliberately does **not** materialize Candidate A or its post-fix regression yet.
+
+After materialization:
+
+```bash
+git status --short
+```
+
+should show only the expected untracked diagnostic files.
+
+---
+
+## 7. A — pure factor H8 / H11 diagnostics
+
+No data service or provider network is used.
+
+```bash
+(cd services/factor && uv run pytest -vv -s tests/test_issue107_macro_stampede_local.py)
+(cd services/factor && uv run pytest -vv -s tests/test_issue107_live_cache_stampede_local.py)
 ```
 
 Record:
 
 ```text
-command
-exit code
-passed / failed / skipped counts
-runtime
-unexpected warnings
+H8 sequential same-key underlying fetch count
+H8 concurrent same-key underlying fetch count
+H11 concurrent identical score main-fetch count
+H11 warm identical score main-fetch count
 ```
 
-If existing upstream tests fail before our changes, preserve that output separately. Do not "fix" unrelated failures inside #107 without deciding whether they block the investigation.
+Expected current structure, to be verified rather than assumed:
+
+```text
+post-population cache reuse works
+but
+cold in-flight same-key calls are not coalesced
+```
+
+This does not establish production materiality.
 
 ---
 
-## 5. Fetch contributor diagnostics without merging notes
+## 8. B — controlled H1 pool=2 diagnostic
 
-Stay on `fix/data-service-saturation`.
-
-```bash
-git fetch origin notes/issue-107
-```
-
-### Pure factor diagnostics
+Run:
 
 ```bash
-git show origin/notes/issue-107:.faysk-notes/tools/test_macro_cache_stampede_draft.py \
-  > services/factor/tests/test_issue107_macro_stampede_local.py
-
-git show origin/notes/issue-107:.faysk-notes/tools/test_factor_live_cache_stampede_draft.py \
-  > services/factor/tests/test_issue107_live_cache_stampede_local.py
+(cd services/data && uv run pytest -vv -s tests/test_issue107_pool_pressure_local.py)
 ```
 
-### Data DB-pool diagnostic
+The test owns a two-connection pool.
 
-```bash
-git show origin/notes/issue-107:.faysk-notes/tools/test_backfill_pool_pressure_draft.py \
-  > services/data/tests/test_issue107_pool_pressure_local.py
+Control:
+
+```text
+1 blocked provider call
+→ /health succeeds
 ```
 
-Confirm they are temporary/untracked:
+Pressure:
 
-```bash
-git status --short
+```text
+2 blocked provider calls
+→ /openapi.json succeeds
+→ /health cannot acquire DB until provider release
 ```
 
-Do not `git add` them.
+If observed, this proves current resource ordering can starve unrelated DB-backed traffic while the ASGI/event-loop path is alive.
+
+It still does not prove H1 is the dominant production #107 mechanism.
 
 ---
 
-## 6. Run the pure factor cache diagnostics
+## 9. C — real-Uvicorn slow-provider baseline, one data worker
 
-These use no data-service, DB, FRED API key or external network.
+Use `16-two-worker-fake-provider-harness.md`.
 
-### H8 — macro-key cold stampede
-
-```bash
-cd services/factor
-uv run pytest -vv -s tests/test_issue107_macro_stampede_local.py
-cd ../..
-```
-
-Expected current-main structural behavior:
+Start with:
 
 ```text
-sequential same-key macro requests
-→ one underlying fetch after cache population
-
-6 simultaneous cold same-key requests
-→ all 6 miss before first cache put
-→ six underlying fake fetches
+data workers = 1
+fake venue = binance
+provider mode = async
 ```
 
-If observed, this proves lack of macro same-key in-flight coalescing (**H8 structure**), not that H8 is materially responsible for #107.
+Run `issue107_load_probe.py` with a concurrency sweep only as large as needed to see the pressure transition.
 
-### H11 — whole live-score cold stampede
-
-```bash
-cd services/factor
-uv run pytest -vv -s tests/test_issue107_live_cache_stampede_local.py
-cd ../..
-```
-
-This checks whether simultaneous identical live score requests all miss the module-level live cache before the first result is installed.
-
-Again:
+Capture:
 
 ```text
-structural duplication ≠ production materiality
+backfill p50/p95/p99
+health p50/p95/p99
+openapi p50/p95/p99
+HTTP status/error classes
+provider active
+backfill HTTP in-flight
+pool available minimum
+pool waiting maximum
+pool wait-ms delta
 ```
 
-The service-level macro/mixed harnesses later decide whether H8/H11 matter enough to change production code.
+OpenAPI healthy + health degraded is the important isolation signal.
 
 ---
 
-## 7. Run the DB pool-pressure diagnostic
+## 10. D — PostgreSQL-side evidence
 
-```bash
-cd services/data
-uv run pytest -vv -s tests/test_issue107_pool_pressure_local.py
-cd ../..
-```
-
-The diagnostic deliberately overrides the test app's pool to:
-
-```text
-max_size = 2
-```
-
-so it does not depend on the repository's normal pool default staying at 10.
-
-### Control
-
-```text
-1 blocked fake-provider backfill
-→ 1/2 DB connections retained by route-scoped DBConn
-→ one pool slot remains
-→ /health expected to complete
-```
-
-### Pressure case
-
-```text
-2 blocked fake-provider backfills
-→ 2/2 DB connections retained
-→ /openapi.json expected to remain responsive
-→ /health expected to wait
-→ release fake provider
-→ backfills complete
-→ /health completes
-```
-
-No real market-data provider is contacted.
-
-### Interpretation
-
-If the behavior matches:
-
-```text
-confirmed:
-current route/resource ordering can starve unrelated DB-backed requests while the ASGI/event-loop
-path remains alive
-
-NOT YET confirmed:
-this is the dominant production root cause of #107
-```
-
-If it does **not** match, preserve the result and investigate why. Do not edit the test to force our hypothesis.
-
----
-
-## 8. Cleanup the temporary pytest diagnostics
-
-```bash
-rm services/factor/tests/test_issue107_macro_stampede_local.py
-rm services/factor/tests/test_issue107_live_cache_stampede_local.py
-rm services/data/tests/test_issue107_pool_pressure_local.py
-git status --short
-```
-
-PowerShell:
-
-```powershell
-Remove-Item services/factor/tests/test_issue107_macro_stampede_local.py
-Remove-Item services/factor/tests/test_issue107_live_cache_stampede_local.py
-Remove-Item services/data/tests/test_issue107_pool_pressure_local.py
-git status --short
-```
-
-The contribution branch should still contain zero #107 production changes at this point.
-
----
-
-## 9. Materialize service-level contributor harnesses
-
-### Data-side wrapper and low-level probes
-
-```bash
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_slow_data_app.py \
-  > services/data/issue107_slow_data_app.py
-
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_load_probe.py \
-  > services/data/issue107_load_probe.py
-
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_timeout_persistence_probe.py \
-  > services/data/issue107_timeout_persistence_probe.py
-```
-
-### Factor full-stack probe
-
-A convenient location is `services/factor/` because its environment already contains factor/shared dependencies:
-
-```bash
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_factor_macro_probe.py \
-  > services/factor/issue107_factor_macro_probe.py
-```
-
-### Runner-like and mixed probes
-
-These import only shared auth/config plus HTTPX and can also be run from `services/factor/` after `uv sync`:
-
-```bash
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_runner_poll_probe.py \
-  > services/factor/issue107_runner_poll_probe.py
-
-git show origin/notes/issue-107:.faysk-notes/tools/issue107_mixed_workload_probe.py \
-  > services/factor/issue107_mixed_workload_probe.py
-```
-
-All of the above are temporary contributor tooling. Keep them untracked.
-
-The data wrapper exposes:
-
-```text
-X-Issue107-Worker-Pid response header
-GET /__issue107/state          # DB-free per-worker provider/http/thread/pool counters
-provider start/done/cancel/fail logs
-```
-
-The state endpoint now includes direct Psycopg `get_stats()` values plus per-path HTTP in-flight counts, so peak pressure can be measured instead of guessed.
-
----
-
-## 10. Service-level slow-provider baseline
-
-Follow `16-two-worker-fake-provider-harness.md` for the real Uvicorn/TCP one-worker and two-worker load runs.
-
-Start with one data worker and fake Binance only. The goal is to reproduce the DB/non-DB isolation signal with a real TCP server before adding factor/runner traffic.
-
-The load probe reports worker PID distribution for responses it receives, so the two-worker result does not assume a 50/50 split.
-
----
-
-## 11. DB-side transaction evidence
-
-For the one-worker fake-provider run, follow:
+During blocked first-provider waits, follow:
 
 ```text
 25-pg-stat-activity-diagnostic.md
 ```
 
-Use a temporary diagnostic `application_name` and capture PostgreSQL activity while the **first** fake-provider fetches are blocked.
-
-Strong current-main signal would be:
+Capture:
 
 ```text
-provider waits are active outside PostgreSQL
-AND
-data-service sessions appear idle in transaction after latest_bar_ts SELECT
+provider work sleeping outside PostgreSQL
+idle in transaction count
+oldest transaction age
+last query sample
 ```
 
-Do not change global autocommit or `_shared` to make the metric disappear.
+Use direct Psycopg pool stats from the wrapper alongside PostgreSQL activity; PostgreSQL `idle` alone does not tell us whether the application has returned a connection to its pool.
 
 ---
 
-## 12. Client-timeout persistence diagnostic
+## 11. E — H9 / H10 client-timeout and thread persistence
 
-After the basic one-worker HTTP harness is understood, run the server with a provider delay longer than the client timeout and execute:
+Follow:
 
-```bash
-uv run python issue107_timeout_persistence_probe.py \
-  --base-url http://127.0.0.1:18001 \
-  --attempts 4 \
-  --request-timeout 0.5 \
-  --settle-wait 6
+```text
+24-client-timeout-cancellation.md
+26-h10-default-executor-contention.md
 ```
 
-Interpret using `24-client-timeout-cancellation.md`.
+Run the real-TCP timeout probe first with:
+
+```text
+provider mode = async
+```
+
+then repeat where useful with:
+
+```text
+provider mode = thread
+```
 
 Question:
 
 ```text
-After clients have already timed out, are older fake-provider requests still active/completing,
-or did Uvicorn/ASGI cancellation propagate promptly?
+after the client deadline, is older server/provider work still active?
 ```
 
-This tests H9 and determines whether retry amplification can include overlapping abandoned server work.
+Thread mode additionally asks whether the underlying synchronous worker survives cancellation of the asyncio waiter.
 
 ---
 
-## 13. Full-stack factor macro baseline
+## 12. F — two-data-worker confirmation
+
+Repeat the understood low-level workload with:
+
+```text
+data workers = 2
+```
+
+matching current production compose.
+
+Do not treat `/__issue107/state` as service-global: its counters are per process.
+
+Use:
+
+```text
+response worker PID headers
+per-PID logs
+client-visible latency/errors
+```
+
+and do not assume a 50/50 split.
+
+---
+
+## 13. G — full-stack factor macro baseline
 
 Follow:
 
@@ -412,31 +381,40 @@ Follow:
 36-safe-full-stack-macro-harness.md
 ```
 
-For exact counts use:
+Recommended exact-count topology:
 
 ```text
 data workers   = 1
 factor workers = 1
 fake venues    = binance,fred
 fake bars/fetch = 1000
+benchmark DB   = inalpha_issue107
 ```
 
-Run the factor macro probe with:
+Before a DB-cold/factor-cold comparison:
+
+```text
+restart factor
+TRUNCATE bars in dedicated DB
+verify count(*) = 0
+```
+
+Run:
 
 ```text
 cold single caller
 cold concurrent same-symbol callers
-cold concurrent unique-symbol callers
+cold concurrent unique price-key callers
 immediate warm wave
 ```
 
-Restart factor before a true cold run.
+Do **not** truncate/restart between the first wave and its intentional immediate warm control.
 
-Record actual factor→data request/provider-call deltas. Do not infer them from static “18 FRED series” arithmetic when the harness can count them directly.
+Record actual provider/data call counts. Static “18 FRED series” arithmetic is not a substitute for runtime counts.
 
 ---
 
-## 14. Live-runner-like aligned vs staggered baseline
+## 14. H — runner aligned vs staggered
 
 Follow:
 
@@ -444,32 +422,42 @@ Follow:
 38-runner-poll-harness.md
 ```
 
-Use fake:
+Use:
 
 ```text
-binance,baostock,yfinance
-ISSUE107_FAKE_BARS_PER_FETCH=1000
+data workers = 1
+fake venues = binance,baostock,yfinance
+fake bars/fetch = 1000
+benchmark DB = inalpha_issue107
 ```
 
-Compare the **same** run count/provider delay with:
+For each comparison reset the dedicated bars table first.
+
+Compare:
 
 ```text
---stagger-ms 0
---stagger-ms 100
+--runs 8 --stagger-ms 0
 ```
 
-The probe samples peak provider/HTTP/DB-pool state while the wave is active.
+against:
 
-This tests H6 without modifying `live_runner.py`.
+```text
+--runs 8 --stagger-ms 100
+```
+
+with the same provider delay/mode.
+
+This tests H6 without changing `live_runner.py`.
 
 ---
 
-## 15. Mixed representative acceptance workload
+## 15. I — mixed issue-level M1/M2/M3 baseline
 
-Only after the isolated mechanisms are understood, follow:
+Follow:
 
 ```text
 39-mixed-workload-harness.md
+41-benchmark-db-state-determinism.md
 ```
 
 Exact-count first pass:
@@ -479,173 +467,161 @@ data workers   = 1
 factor workers = 1
 fake venues    = binance,fred,baostock,yfinance
 fake bars/fetch = 1000
+benchmark DB   = inalpha_issue107
 ```
 
-Run at least:
+For **each** cold scenario:
 
 ```text
-M1: cold factor same-symbol + runner stagger=0
-M2: cold factor unique-symbol + runner stagger=0
-M3: cold factor same-symbol + runner stagger=100ms
+1. stop previous wave
+2. restart factor so module cache is cold
+3. TRUNCATE bars in inalpha_issue107
+4. verify bars count = 0
+5. keep provider mode/delay and worker topology unchanged
+6. run exactly one scenario
+7. save output
 ```
 
-Restart factor before each comparison that is intended to be cold.
-
-The mixed probe also sends:
+Scenarios:
 
 ```text
-/openapi.json  # DB-free control
-/health        # DB-backed control
+M1  factor same-symbol + runner stagger 0
+M2  factor unique price keys + runner stagger 0
+M3  factor same-symbol + runner stagger 100ms
 ```
 
-while factor/runner work is in flight.
-
-This is the issue-level baseline we should rerun unchanged after Candidate A or any other selected fix.
+This avoids accidentally comparing M1's cold DB to M2/M3 after M1 already populated bars.
 
 ---
 
-## 16. Full baseline sequence
+## 16. J — fill the baseline decision record
 
-Do not start with the mixed scenario. Use this order:
+Update `04-baseline-results.md` with:
 
 ```text
-A. existing data/factor tests
-B. pure H8/H11 factor diagnostics
-C. controlled pool=2 H1 diagnostic
-D. real-Uvicorn slow-provider pressure — 1 data worker
-E. pg_stat_activity during blocked provider wait
-F. H9 client-timeout/cancellation behavior
-G. same low-level fake workload — 2 data workers
-H. live factor + macro: cold single
-I. live factor + macro: cold concurrent same keys
-J. live factor + macro: cold concurrent unique price keys
-K. immediate warm factor control
-L. runner-like aligned polls
-M. runner-like stagger control
-N. mixed M1/M2/M3 issue-level baseline
-O. only then select the first production intervention
+first resource to degrade
+DB pool available/wait evidence
+provider active/failure evidence
+concrete transport error classes
+DATA_SERVICE_UNREACHABLE chain if observed
+H6/H8/H9/H10/H11 evidence
+negative evidence / ruled-out hypotheses
 ```
 
-This order lets us explain *why* the mixed workload fails instead of only observing that it fails.
+Do not choose a fix until the conclusion section can answer:
+
+```text
+What is the smallest measured cause we can remove without weakening freshness or changing unrelated contracts?
+```
 
 ---
 
-## 17. One-worker vs two-worker discipline
+## 17. K — first production decision gate
 
-The repository's production compose currently runs:
-
-```text
-data WORKERS=2
-factor WORKERS=1
-paper WORKERS=1
-research WORKERS=1
-```
-
-Use:
+Possible outcomes:
 
 ```text
-1 data worker
-→ deterministic diagnosis / easier attribution
+H1 material
+→ Candidate A: narrow /backfill/bars DB lease
 
-2 data workers
-→ production-like confirmation
+DB healthy after H1 correction but provider/in-flight work saturates
+→ Candidate C: bounded admission before scarce-resource checkout
+
+H8/H11 materially amplify the representative workload after the data boundary is healthy
+→ factor single-flight / bounded fan-out candidate
+
+H3 connection churn material
+→ safe factor HTTP reuse with per-request Authorization
+
+H6 still changes failures materially after Candidate A
+→ consider runner scheduling/jitter with maintainer alignment
+
+none explain failure
+→ investigate further; do not force a planned solution
 ```
 
-Never describe a normal `asyncio.Semaphore`/lock/cache as service-global under the two-worker topology. It is process-local unless an external coordination mechanism is introduced.
-
-State/counter caveat:
-
-```text
-/__issue107/state
-```
-
-is process-local. Exact deltas and peak samples are only directly interpretable with one data worker. In two-worker mode combine client-visible behavior, response PID headers and per-PID logs.
+Candidate A is not applied before this gate.
 
 ---
 
-## 18. Evidence to save
+## 18. If Candidate A is selected
 
-For every run record:
-
-```text
-commit SHA
-worker count / worker PIDs
-test/scenario name
-request count / concurrency
-factor cache condition: cold/warm
-factor symbol mode: same/unique
-runner stagger
-fake provider mode/delay/bars-per-fetch
-duration
-p50 / p95 / p99
-HTTP status counts
-concrete HTTPX exception types
-DATA_SERVICE_UNREACHABLE count
-zero-row/no-progress refresh count
-DB pool requests/queued/wait/errors/available minimum
-pg_stat_activity state/xact evidence where applicable
-provider started/active/completed/cancelled counters
-provider per-venue counts
-HTTP in-flight peaks
-CPU / memory where practical
-notes on freshness/cutoff behavior
-```
-
-For the initial controlled-pool diagnostic, the important evidence is:
+Only then materialize:
 
 ```text
-1/2 pool slots retained: health available? yes/no
-2/2 pool slots retained: openapi available? yes/no; health blocked? yes/no
+.faysk-notes/tools/candidate_a_narrow_db_lease.patch
+.faysk-notes/tools/test_candidate_a_regression_draft.py
 ```
 
-For the mixed workload, preserve factor, runner, health and OpenAPI outcomes separately.
+Prefer translating the draft into a clean production commit rather than blindly applying it if upstream has changed.
+
+First regression property:
+
+```text
+pool max_size=2
+4 blocked provider requests all reach provider I/O
+while /health remains DB-responsive
+```
+
+Then rerun the **same** low-level/factor/runner/mixed baselines with identical DB-reset/cache discipline.
+
+Record in `07-before-after-results.md`.
 
 ---
 
-## 19. Cleanup contributor harness files
+## 19. Final cleanup before production commit review
 
-Before making or reviewing the actual contribution diff, remove every materialized contributor tool:
+Remove every contributor-only materialized harness/diagnostic and verify:
 
 ```bash
-rm services/data/issue107_slow_data_app.py
-rm services/data/issue107_load_probe.py
-rm services/data/issue107_timeout_persistence_probe.py
-rm services/factor/issue107_factor_macro_probe.py
-rm services/factor/issue107_runner_poll_probe.py
-rm services/factor/issue107_mixed_workload_probe.py
 git status --short
 ```
 
-PowerShell equivalents are fine.
+The production diff should contain only the selected fix and intentionally upstream-worthy regression tests/docs.
 
-The final upstream PR should not accidentally contain the contributor harness unless the maintainer explicitly asks for a generally reusable benchmark tool.
-
----
-
-## 20. Stop conditions
-
-Stop before implementing a production fix if:
-
-- the baseline cannot reproduce a capacity problem;
-- current upstream moved materially since the reviewed commit;
-- failures are caused by local setup rather than service saturation;
-- the proposed solution would require touching `_shared`, live-runner/risk paths, or a large cross-service contract without renewed scope review;
-- a lower error rate would only be achieved by weakening freshness or hiding a failed refresh.
-
----
-
-## 21. First implementation gate
-
-Only after baseline evidence exists, decide among:
+Never accidentally commit:
 
 ```text
-A. shorten DB connection lifetime around provider I/O
-B. add bounded admission before scarce DB checkout
-C. address factor macro duplicate/fan-out behavior if materially measured
-D. address factor HTTP client reuse if materially measured
-E. another measured bottleneck
+issue107_slow_data_app.py
+load probes
+notes branch files
+local benchmark scripts/results
 ```
 
-Current project precedent already favors separating DB work from external HTTP in the live runner (see `37-existing-db-http-separation-precedent.md`), which strengthens Candidate A's project fit **if H1 is measured**. It does not replace the baseline requirement.
+unless the maintainer explicitly asks for a reusable benchmark artifact.
 
-Do not implement all candidates together. One measured cause, one minimal intervention, same benchmark before/after.
+---
+
+## 20. Evidence discipline
+
+For every benchmark save:
+
+```text
+commit SHA
+benchmark DB name
+factor cache cold/warm
+data bars cold/warm
+worker count / PIDs
+provider fake mode/delay/bars-per-fetch
+request shape/concurrency
+runner stagger
+p50/p95/p99
+HTTP status counts
+concrete HTTPX exception types
+DATA_SERVICE_UNREACHABLE count
+refresh row/timestamp progress
+DB pool available/wait/queue/error metrics
+provider active/completed/cancelled/failed metrics
+thread-active metrics where applicable
+pg_stat_activity evidence where applicable
+```
+
+Rules:
+
+1. Change one meaningful variable at a time.
+2. Preserve failing reproduction before fixing it.
+3. Never stress real provider APIs for load testing.
+4. HTTP 200 without expected data progress is not refresh success.
+5. Lower errors achieved by stale current data are not success.
+6. Use the exact same benchmark state before/after the selected fix.
+7. Record negative evidence as carefully as supporting evidence.
