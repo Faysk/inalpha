@@ -11,11 +11,15 @@ Each simulated run creates its own short-lived ``httpx.AsyncClient`` for the pol
 paper ``DataClient`` lifecycle used by ``_fetch_latest_bar``.
 
 Recommended target is ``issue107_slow_data_app.py`` with every requested venue faked. The probe
-refuses to run if a required venue is not listed in ``ISSUE107_FAKE_VENUES``.
+refuses to run if a required venue is not listed in ``ISSUE107_FAKE_VENUES`` or if the fake returns
+too few bars per provider fetch, because that would create artificial multi-batch amplification.
 
 Example exact one-worker diagnostic:
 
-    ISSUE107_FAKE_VENUES=binance,baostock,yfinance ... data wrapper --workers 1
+    ISSUE107_FAKE_VENUES=binance,baostock,yfinance \
+      ISSUE107_FAKE_BARS_PER_FETCH=1000 \
+      ISSUE107_PROVIDER_MODE=async ISSUE107_PROVIDER_DELAY_S=0.5 \
+      uv run uvicorn issue107_slow_data_app:app --host 127.0.0.1 --port 18001 --workers 1
 
     uv run python issue107_runner_poll_probe.py \
       --data-url http://127.0.0.1:18001 --runs 8 --rounds 1 --stagger-ms 0
@@ -23,6 +27,9 @@ Example exact one-worker diagnostic:
 Compare with a controlled stagger without changing production code:
 
     uv run python issue107_runner_poll_probe.py --runs 8 --stagger-ms 100
+
+The probe samples the wrapper's DB-free state endpoint while the wave is in flight so peak provider,
+HTTP and pool pressure are visible rather than inferred only from before/after counters.
 """
 
 from __future__ import annotations
@@ -127,6 +134,26 @@ async def _state(data_url: str) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise RuntimeError(f"unexpected state payload: {body!r}")
         return body
+
+
+async def _sample_state(
+    *,
+    data_url: str,
+    stop: asyncio.Event,
+    samples: list[dict[str, Any]],
+    interval_s: float,
+) -> None:
+    """Sample only the contributor DB-free endpoint while the workload is in flight."""
+    while not stop.is_set():
+        try:
+            samples.append(await _state(data_url))
+        except Exception as exc:
+            # Diagnostic sampling must never perturb/abort the workload it is observing.
+            samples.append({"sample_error": type(exc).__name__})
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval_s)
+        except TimeoutError:
+            pass
 
 
 def _delta(before: dict[str, Any], after: dict[str, Any], key: str) -> int | None:
@@ -275,6 +302,49 @@ def _print_state_delta(before: dict[str, Any], after: dict[str, Any]) -> None:
             print(f"{key}_delta={value}")
 
 
+def _numeric(samples: list[dict[str, Any]], key: str) -> list[int]:
+    out: list[int] = []
+    for sample in samples:
+        value = sample.get(key)
+        if isinstance(value, (int, float)):
+            out.append(int(value))
+    return out
+
+
+def _print_peak_state(samples: list[dict[str, Any]]) -> None:
+    print("\n[peak_state_during_wave]")
+    if not samples:
+        print("samples=0")
+        return
+
+    print(f"samples={len(samples)}")
+    errors = Counter(str(s.get("sample_error")) for s in samples if s.get("sample_error"))
+    print(f"sample_errors={dict(errors)}")
+
+    max_keys = (
+        "active",
+        "venue_binance_active",
+        "venue_baostock_active",
+        "venue_yfinance_active",
+        "thread_active",
+        "http_post_backfill_bars_inflight",
+        "http_get_bars_inflight",
+        "pool_requests_waiting",
+    )
+    for key in max_keys:
+        values = _numeric(samples, key)
+        if values:
+            print(f"{key}_max={max(values)}")
+
+    available = _numeric(samples, "pool_pool_available")
+    if available:
+        print(f"pool_pool_available_min={min(available)}")
+
+    pool_size = _numeric(samples, "pool_pool_size")
+    if pool_size:
+        print(f"pool_pool_size_max={max(pool_size)}")
+
+
 def _required_venues(runs: list[SimRun]) -> set[str]:
     return {run.venue for run in runs}
 
@@ -283,8 +353,8 @@ async def _run(args: argparse.Namespace) -> None:
     runs = _build_runs(args.runs)
     required = _required_venues(runs)
 
-    before = await _state(args.data_url)
-    fake = {item.strip() for item in str(before.get("fake_venues", "")).split(",") if item.strip()}
+    initial = await _state(args.data_url)
+    fake = {item.strip() for item in str(initial.get("fake_venues", "")).split(",") if item.strip()}
     missing = required - fake
     if missing:
         raise RuntimeError(
@@ -292,16 +362,39 @@ async def _run(args: argparse.Namespace) -> None:
             f"missing={sorted(missing)} configured={sorted(fake)}"
         )
 
+    bars_per_fetch = int(initial.get("fake_bars_per_fetch", 0) or 0)
+    if bars_per_fetch < 10:
+        raise RuntimeError(
+            "misleading runner probe configuration: ISSUE107_FAKE_BARS_PER_FETCH must be >= 10 "
+            "(recommended 1000) so the synthetic 5-bar warm window does not become artificial "
+            f"multi-batch provider traffic; current={bars_per_fetch}"
+        )
+
     print(
         "configuration "
         f"runs={args.runs} rounds={args.rounds} stagger_ms={args.stagger_ms} "
-        f"round_interval={args.round_interval}s venues={sorted(required)}"
+        f"round_interval={args.round_interval}s sample_interval={args.sample_interval}s "
+        f"venues={sorted(required)} fake_bars_per_fetch={bars_per_fetch}"
     )
 
     token = _token()
+    overall_before = initial
+
     for round_idx in range(args.rounds):
-        results = await asyncio.gather(
-            *[
+        round_before = await _state(args.data_url)
+        stop = asyncio.Event()
+        samples: list[dict[str, Any]] = []
+        sampler = asyncio.create_task(
+            _sample_state(
+                data_url=args.data_url,
+                stop=stop,
+                samples=samples,
+                interval_s=args.sample_interval,
+            )
+        )
+
+        tasks = [
+            asyncio.create_task(
                 _poll_once(
                     data_url=args.data_url,
                     token=token,
@@ -309,15 +402,26 @@ async def _run(args: argparse.Namespace) -> None:
                     timeout_s=args.timeout,
                     stagger_s=args.stagger_ms / 1000.0,
                 )
-                for run in runs
-            ]
-        )
+            )
+            for run in runs
+        ]
+        try:
+            results = await asyncio.gather(*tasks)
+        finally:
+            stop.set()
+            await sampler
+
+        round_after = await _state(args.data_url)
         _print_results(round_idx + 1, results)
+        _print_state_delta(round_before, round_after)
+        _print_peak_state(samples)
+
         if round_idx + 1 < args.rounds:
             await asyncio.sleep(args.round_interval)
 
-    after = await _state(args.data_url)
-    _print_state_delta(before, after)
+    overall_after = await _state(args.data_url)
+    print("\n[overall_state_delta]")
+    _print_state_delta(overall_before, overall_after)
 
     print("\n[interpretation]")
     print(
@@ -329,7 +433,12 @@ async def _run(args: argparse.Namespace) -> None:
         "execution; actual paper restart/warmup remains a later integration scenario."
     )
     print(
-        "- exact state deltas require one data worker; use PID/log evidence for two-worker confirmation."
+        "- the generic fake intentionally does not reproduce yfinance/baostock provider-specific "
+        "serialization; this experiment isolates caller alignment + data/DB resource behavior."
+    )
+    print(
+        "- exact state deltas/peaks require one data worker; use PID/log evidence for two-worker "
+        "confirmation because /__issue107/state is process-local."
     )
 
 
@@ -341,6 +450,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--stagger-ms", type=float, default=0.0)
     parser.add_argument("--round-interval", type=float, default=1.0)
     parser.add_argument("--timeout", type=float, default=30.0)
+    parser.add_argument("--sample-interval", type=float, default=0.05)
     return parser
 
 
