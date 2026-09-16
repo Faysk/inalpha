@@ -52,9 +52,15 @@ Faysk/inalpha
 | `26-h10-default-executor-contention.md` | Shared `asyncio.to_thread` executor contention hypothesis and async-vs-thread fake-provider experiment |
 | `27-exact-macro-fanout.md` | Exact current default macro shape: 26 factor specs backed by 18 unique FRED series |
 | `28-candidate-a-capacity-decoupling-risk.md` | Guard against “fix DB, overload provider”: provider-concurrency checks after Candidate A |
+| `29-runner-resume-factor-burst-shape.md` | Refined restart burst model: factor baseline fan-out depends on timeframe and lineage rather than every runner always requesting the full macro set |
+| `30-cross-service-timeout-budget-mismatch.md` | Nested paper→factor→data timeout-budget mismatch and runtime cancellation questions |
+| `31-candidate-a-project-fit-and-contract-review.md` | Candidate A style precedent, testability, checkout-count trade-off and error-precedence review |
+| `32-provider-concurrency-matrix.md` | Per-venue concurrency/timeout controls and moved-bottleneck risks after DB decoupling |
+| `33-h11-factor-live-cache-stampede.md` | Whole live-score cache same-key stampede, shared LRU eviction nuance and service-level materiality gate |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
+| `tools/test_factor_live_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold identical live score requests coalesce or duplicate main data fetches |
 | `tools/issue107_slow_data_app.py` | Fake provider wrapper with async/thread modes, worker PID header, request counters, sync-thread counters and DB-free state endpoint |
 | `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles and observed worker PID distribution |
 | `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence |
