@@ -69,6 +69,7 @@ Faysk/inalpha
 | `43-candidate-a-overlap-write-correctness.md` | Explicit guard against overstating UPSERT safety; same-key mutable-candle completion inversion is tested only if H4 proves material overlap |
 | `44-runtime-execution-manifest.md` | Stable A–N runtime scenario names, exact controlled inputs, result filenames and baseline→candidate comparison discipline |
 | `45-evidence-capture-helper.md` | Windows evidence-session workflow that records revision/tool/host metadata outside the Git working tree without dumping secrets |
+| `46-data-regression-ci-enforcement-gap.md` | Current CI runs data Ruff/mypy but not data pytest; records options without automatically broadening #107 into a CI-policy change |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
