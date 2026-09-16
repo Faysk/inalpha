@@ -34,6 +34,7 @@ Faysk/inalpha
 | `08-pr-draft.md` | Draft upstream PR description/checklist |
 | `09-working-principles.md` | Contribution discipline: evidence, invariants, smallest justified change, regression mindset |
 | `10-active-investigation.md` | Current confirmed static findings, sharpened hypotheses, and next runtime decision gate |
+| `11-local-test-runbook.md` | Exact local setup, baseline checks, diagnostic commands, cleanup, and evidence capture sequence |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic diagnostic for DB-pool starvation while provider I/O is blocked |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
