@@ -240,13 +240,23 @@ or `public.bars` depending on PostgreSQL formatting.
 
 Read the current helper directly from the notes ref instead of switching the production branch to the notes branch.
 
-A convenient one-time local copy can be made with `git show`, for example:
+Avoid PowerShell `>` for this copy because Windows PowerShell and modern PowerShell differ in native-command redirection encoding. Use an explicit UTF-8-no-BOM write:
 
 ```powershell
-git show origin/notes/issue-107:.faysk-notes/tools/prepare_issue107_local.ps1 > $env:TEMP\prepare_issue107_local.ps1
-```
+$helperPath = Join-Path $env:TEMP "prepare_issue107_local.ps1"
+$helperLines = & git show "origin/notes/issue-107:.faysk-notes/tools/prepare_issue107_local.ps1"
+if ($LASTEXITCODE -ne 0) {
+    throw "failed to read prepare_issue107_local.ps1 from notes branch"
+}
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+[System.IO.File]::WriteAllText(
+    $helperPath,
+    (($helperLines -join "`n") + "`n"),
+    $utf8NoBom
+)
 
-If PowerShell redirection changes encoding in the local shell/version, prefer copying the file through your editor or use the raw notes branch checkout separately. The helper itself writes materialized files as UTF-8 without BOM.
+& $helperPath
+```
 
 Run the helper only while the production checkout is still clean and exactly at `upstream/main`.
 
@@ -256,7 +266,7 @@ The current helper will then:
 fetch upstream + notes
 verify branch/SHA
 refuse tracked/existing destinations
-materialize contributor files as untracked
+materialize contributor files as untracked UTF-8
 syntax-parse materialized Python/PowerShell tooling
 print git status and tool versions
 ```
