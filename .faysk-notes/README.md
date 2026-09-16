@@ -30,12 +30,12 @@ Faysk/inalpha
 | `04-baseline-results.md` | Pre-change measurements and observations, including concrete transport-error classification and DB/non-DB isolation controls |
 | `05-solution-design.md` | Chosen implementation design after evidence is collected |
 | `06-implementation-log.md` | Chronological implementation/debugging log |
-| `07-before-after-results.md` | Baseline vs fixed benchmark comparison |
+| `07-before-after-results.md` | Baseline vs fixed benchmark comparison, including moved-bottleneck/provider-capacity checks |
 | `08-pr-draft.md` | Draft upstream PR description/checklist |
 | `09-working-principles.md` | Contribution discipline: evidence, invariants, smallest justified change, regression mindset |
 | `10-active-investigation.md` | Current confirmed static findings, sharpened hypotheses, and next runtime decision gate |
 | `11-local-test-runbook.md` | Exact local setup, baseline checks, diagnostic commands, cleanup, and evidence capture sequence |
-| `12-static-capacity-model.md` | Per-worker DB capacity model, macro/live burst arithmetic, timeout cascade, health canary predictions |
+| `12-static-capacity-model.md` | Per-worker DB capacity model, exact macro fan-out, timeout cascade, H8/H9/H10 interactions |
 | `13-caller-backpressure-matrix.md` | Factor/paper/research/dashboard/orchestration behavior if backfill is busy or fails |
 | `14-candidate-fix-a-narrow-db-lease.md` | Prepared minimal candidate that releases DB capacity during external provider I/O; not selected until measured |
 | `15-error-classification-and-retry-chain.md` | Why `DATA_SERVICE_UNREACHABLE` can mean read timeout, pool-induced slowness, or real connectivity; retry amplification model |
@@ -49,12 +49,15 @@ Faysk/inalpha
 | `23-candidate-a-deep-review.md` | Candidate A transaction, failure-precedence, idempotency and explicit-connection-lifetime review |
 | `24-client-timeout-cancellation.md` | H9 runtime test for whether timed-out clients leave older server/provider work alive and overlapping retries |
 | `25-pg-stat-activity-diagnostic.md` | DB-side `pg_stat_activity` evidence plan for open transactions retained during fake provider waits |
-| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process baseline diagnostic; includes non-DB control |
-| `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression draft: >pool-size provider waits must coexist with responsive DB-backed health |
+| `26-h10-default-executor-contention.md` | Shared `asyncio.to_thread` executor contention hypothesis and async-vs-thread fake-provider experiment |
+| `27-exact-macro-fanout.md` | Exact current default macro shape: 26 factor specs backed by 18 unique FRED series |
+| `28-candidate-a-capacity-decoupling-risk.md` | Guard against “fix DB, overload provider”: provider-concurrency checks after Candidate A |
+| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
+| `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
-| `tools/issue107_slow_data_app.py` | Fake slow-provider wrapper with worker PID header, per-process counters, cancellation logs and DB-free diagnostic state endpoint |
+| `tools/issue107_slow_data_app.py` | Fake provider wrapper with async/thread modes, worker PID header, request counters, sync-thread counters and DB-free state endpoint |
 | `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles and observed worker PID distribution |
-| `tools/issue107_timeout_persistence_probe.py` | Real-TCP client-timeout experiment checking whether provider work remains active after callers time out |
+| `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence |
 | `tools/candidate_a_narrow_db_lease.patch` | Unapplied patch draft for Candidate A; documentation artifact only until baseline evidence selects it |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
