@@ -11,8 +11,8 @@ Example:
 The script preserves concrete HTTPX exception types instead of collapsing everything into
 ``DATA_SERVICE_UNREACHABLE``. It probes both DB-backed ``/health`` and non-DB ``/openapi.json``
 while backfills are blocked so we can distinguish DB-pool starvation from general server/event-loop
-starvation. When the contributor wrapper is used it also records ``X-Issue107-Worker-Pid`` so a
-2-worker run does not assume requests were split 50/50.
+starvation. When the contributor wrapper is used it also records ``X-Issue107-Worker-Pid`` and
+samples the wrapper's DB-free ``/__issue107/state`` endpoint, including Psycopg pool stats.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ import time
 from collections import Counter
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from typing import Any
 from uuid import uuid4
 
 import httpx
@@ -160,6 +161,72 @@ async def _probe_one(
         )
 
 
+async def _sample_state(base_url: str, count: int) -> list[dict[str, Any]]:
+    """Collect DB-free per-worker snapshots using fresh short-lived connections.
+
+    Uvicorn worker selection is not guaranteed, so these are *observed* workers only. Multiple fresh
+    connections increase the chance of seeing both workers without pretending the sample is exhaustive.
+    """
+    samples: list[dict[str, Any]] = []
+    for _ in range(count):
+        try:
+            async with httpx.AsyncClient(
+                base_url=base_url,
+                timeout=1.5,
+                trust_env=False,
+                headers={"Connection": "close"},
+            ) as client:
+                response = await client.get("/__issue107/state")
+                if response.status_code == 200:
+                    body = response.json()
+                    if isinstance(body, dict):
+                        samples.append(body)
+        except httpx.RequestError:
+            pass
+    return samples
+
+
+def _print_state_samples(label: str, samples: list[dict[str, Any]]) -> None:
+    print(f"\n[{label}_state_samples]")
+    if not samples:
+        print("no state samples")
+        return
+
+    by_pid: dict[str, list[dict[str, Any]]] = {}
+    for sample in samples:
+        by_pid.setdefault(str(sample.get("pid", "unknown")), []).append(sample)
+
+    print(f"observed_pids={sorted(by_pid)} samples={len(samples)}")
+    for pid, pid_samples in sorted(by_pid.items()):
+        latest = pid_samples[-1]
+        interesting = {
+            key: latest.get(key)
+            for key in (
+                "mode",
+                "active",
+                "started",
+                "completed",
+                "cancelled",
+                "failed",
+                "thread_active",
+                "thread_started",
+                "thread_completed",
+                "pool_pool_min",
+                "pool_pool_max",
+                "pool_pool_size",
+                "pool_pool_available",
+                "pool_requests_waiting",
+                "pool_requests_num",
+                "pool_requests_queued",
+                "pool_requests_wait_ms",
+                "pool_requests_errors",
+                "pool_usage_ms",
+            )
+            if key in latest
+        }
+        print(f"pid={pid} latest={interesting}")
+
+
 async def _run(args: argparse.Namespace) -> None:
     token = _token()
     headers = {"Authorization": f"Bearer {token}"}
@@ -168,6 +235,9 @@ async def _run(args: argparse.Namespace) -> None:
         max_keepalive_connections=40,
     )
     timeout = httpx.Timeout(args.backfill_timeout)
+
+    pre_state = await _sample_state(args.base_url, args.state_samples)
+    _print_state_samples("pre", pre_state)
 
     async with httpx.AsyncClient(
         base_url=args.base_url,
@@ -196,6 +266,9 @@ async def _run(args: argparse.Namespace) -> None:
         # Give requests enough time to enter route/provider wait before control probes begin.
         await asyncio.sleep(args.probe_start_delay)
 
+        under_load_state = await _sample_state(args.base_url, args.state_samples)
+        _print_state_samples("under_load", under_load_state)
+
         health_results: list[Result] = []
         control_results: list[Result] = []
         for idx in range(args.health_probes):
@@ -223,6 +296,9 @@ async def _run(args: argparse.Namespace) -> None:
                 await asyncio.sleep(args.health_interval)
 
         backfill_results = await asyncio.gather(*backfill_tasks)
+
+    post_state = await _sample_state(args.base_url, args.state_samples)
+    _print_state_samples("post", post_state)
 
     _print_summary("openapi_control", control_results)
     _print_summary("health", health_results)
@@ -284,6 +360,12 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-timeout", type=float, default=1.0)
     parser.add_argument("--health-interval", type=float, default=0.25)
     parser.add_argument("--probe-start-delay", type=float, default=0.5)
+    parser.add_argument(
+        "--state-samples",
+        type=int,
+        default=8,
+        help="Fresh DB-free state requests per phase; observed worker coverage is best-effort.",
+    )
     return parser
 
 
