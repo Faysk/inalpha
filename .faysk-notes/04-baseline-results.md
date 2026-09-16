@@ -44,9 +44,10 @@ check-consistency:
 
 | Scenario | Topology / concurrency | Requests | HTTP success | Refresh progress | Fail | p50 | p95 | p99 | `DATA_SERVICE_UNREACHABLE` |
 |---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Slow backfill / pool diagnostic | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Controlled small-pool diagnostic | pool=2 / 1 then 2 blocked | TBD | TBD | TBD | TBD | TBD | TBD | TBD | N/A |
 | Fake slow provider — 1 worker | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Fake slow provider — 2 workers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Client-timeout persistence | 1 worker / TBD attempts | TBD | TBD | N/A | TBD | TBD | TBD | TBD | N/A |
 | Live macro cold cache — single caller | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Live macro cold cache — concurrent callers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
 | Live macro warm cache | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
@@ -75,17 +76,18 @@ Record representative runs separately rather than reporting only the best one.
 
 ## Detailed observations
 
-### Slow backfill / DB-pool diagnostic
+### Controlled small-pool diagnostic
+
+The contributor test overrides data DB pool capacity to `max_size=2` so the proof does not depend on normal production tuning.
 
 ```text
-Fake provider delay:
-Concurrency:
-DB pool checked-out/wait symptoms:
-pg_stat_activity observations:
-DB-backed /health latency:
-Non-DB /openapi.json latency:
-Provider in-flight/queue behavior:
-First failure mode:
+Control — 1 blocked provider call:
+/health available?:
+
+Pressure — 2 blocked provider calls:
+/openapi.json available?:
+/health blocked while provider sleeps?:
+/health completes after provider release?:
 ```
 
 Isolation signal:
@@ -102,6 +104,31 @@ Question to answer:
 Does holding route-level DBConn across provider I/O materially contribute to saturation?
 ```
 
+### DB-side activity during provider wait
+
+Follow `25-pg-stat-activity-diagnostic.md`.
+
+```text
+application_name used:
+provider calls currently blocked:
+pg_stat_activity total data sessions:
+idle sessions:
+idle in transaction sessions:
+active sessions:
+oldest xact age:
+last query sample:
+```
+
+Strong H1-supporting baseline signal:
+
+```text
+fake provider work is sleeping outside PostgreSQL
+AND
+connections that already executed latest_bar_ts remain idle in transaction / retained
+```
+
+Remember plain `idle` does not by itself prove whether a connection is checked out vs available in the Psycopg pool.
+
 ### Production-like fake-provider run
 
 ```text
@@ -109,7 +136,11 @@ Workers:
 Fake provider delay:
 Concurrent backfills:
 Worker PIDs observed:
-Request distribution across PIDs:
+Backfill responses by PID:
+Health responses by PID:
+OpenAPI responses by PID:
+Provider starts by PID from logs/state:
+Request distribution skew:
 /openapi.json p95:
 /health p95:
 Backfill p95:
@@ -119,6 +150,45 @@ Rows/progress:
 ```
 
 Do not assume a 50/50 split across two workers.
+
+### Client-timeout persistence / H9
+
+Run against the contributor fake provider over real TCP/Uvicorn, one worker first.
+
+```text
+Fake provider delay:
+Client timeout:
+Attempts:
+Client outcomes (ReadTimeout/etc):
+State before:
+State immediately after client timeouts:
+  started:
+  active:
+  completed:
+  cancelled:
+  failed:
+State after settle:
+  started:
+  active:
+  completed:
+  cancelled:
+  failed:
+```
+
+Interpretation:
+
+```text
+client timeout + active > 0 afterward
+→ old server/provider work survived caller deadline in this topology
+
+cancelled ~= started and active quickly 0
+→ disconnect cancellation propagated promptly
+
+completed rises only after clients timed out
+→ retries/new callers could overlap older work; H9 support
+```
+
+Do not assume executor-backed real providers obey the fake asyncio-sleep cancellation behavior exactly.
 
 ### Live factor macro
 
@@ -210,6 +280,7 @@ Latency curve:
 DATA_SERVICE_UNREACHABLE count:
 Zero-row/no-progress backfills:
 Macro unique keys vs actual calls:
+Provider work surviving caller timeouts?:
 ```
 
 ---
@@ -221,9 +292,11 @@ Macro unique keys vs actual calls:
 | data CPU | TBD | TBD | TBD |
 | data memory | TBD | TBD | TBD |
 | factor CPU | TBD | TBD | TBD |
-| DB connections checked out | TBD | TBD | TBD |
+| DB connections checked out / inferred | TBD | TBD | TBD |
+| DB `idle in transaction` | TBD | TBD | TBD |
 | DB pool waits/timeouts | TBD | TBD | TBD |
 | provider calls in flight | TBD | TBD | TBD |
+| provider calls cancelled | TBD | TBD | TBD |
 | provider queue depth/wait | TBD | TBD | TBD |
 | client connections/sockets | TBD | TBD | TBD |
 | macro unique keys | TBD | TBD | TBD |
@@ -238,7 +311,7 @@ Do not use `DATA_SERVICE_UNREACHABLE` alone as a root-cause category. Factor map
 | Error/result | Count | Scenario | Meaning / retry behavior | Notes |
 |---|---:|---|---|---|
 | `httpx.ConnectTimeout` | TBD | TBD | transport connect deadline | Distinguish from server slowness |
-| `httpx.ReadTimeout` | TBD | TBD | connected but no response bytes within read deadline | Key H1b signal if DB-backed request is waiting server-side |
+| `httpx.ReadTimeout` | TBD | TBD | connected but no response bytes within read deadline | Key H1b/H9 signal when server work is slow |
 | `httpx.WriteTimeout` | TBD | TBD | request-body send deadline | TBD |
 | `httpx.PoolTimeout` (client) | TBD | TBD | load-generator/caller client pool exhausted | Must not confuse with server DB pool |
 | `httpx.ConnectError` | TBD | TBD | actual connection error | Closest to literal “failed to connect” |
@@ -270,13 +343,16 @@ Where practical record:
 logical factor GET operations:
 physical GET attempts:
 retry ratio:
+older server requests still active when retry starts?:
 ```
 
-Question:
+Questions:
 
 ```text
 Does sustained slowness convert one logical read into multiple physical requests because the
 30s client timeout is reached?
+
+If yes, do retries replace cancelled work or overlap older work that remains active?
 ```
 
 ---
@@ -292,6 +368,7 @@ Does sustained slowness convert one logical read into multiple physical requests
 - [ ] H6: live-runner synchronization/resume burst materially contributes
 - [ ] H7: event-loop/thread-pool saturation is primary
 - [ ] H8: cold macro cache stampede materially duplicates same-key factor→data work
+- [ ] H9: timed-out clients leave older server/provider work active long enough to overlap retries/new requests
 
 Evidence:
 
