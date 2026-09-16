@@ -67,12 +67,13 @@ Faysk/inalpha
 | `41-benchmark-db-state-determinism.md` | Dedicated resettable `inalpha_issue107` database and factor-cache/DB-cache discipline so cold/warm and before/after runs are comparable |
 | `42-runtime-readiness-static-validation.md` | Static check that diagnostics match current pytest, auth, schemas, venue/timeframe support, environment loading and Candidate A correctness caveats before runtime |
 | `43-candidate-a-overlap-write-correctness.md` | Explicit guard against overstating UPSERT safety; same-key mutable-candle completion inversion is tested only if H4 proves material overlap |
-| `44-runtime-execution-manifest.md` | Stable A–N runtime scenario names, exact controlled inputs, result filenames and baseline→candidate comparison discipline |
+| `44-runtime-execution-manifest.md` | Stable A–N runtime scenario names, exact controlled inputs, result filenames and baseline→candidate comparison discipline; sustained acceptance is added by `50-sustained-load-acceptance.md` |
 | `45-evidence-capture-helper.md` | Windows evidence-session workflow that records revision/tool/host metadata outside the Git working tree without dumping secrets |
 | `46-data-regression-ci-enforcement-gap.md` | Current CI runs data Ruff/mypy but not data pytest; records options without automatically broadening #107 into a CI-policy change |
 | `47-benchmark-reset-safety.md` | Fail-closed dedicated-DB reset workflow so cold-state benchmarks cannot silently truncate the ordinary development database |
 | `48-factor-target-fail-closed.md` | Fail-closed factor wrapper so factor/mixed load cannot silently route to the ordinary data-service instead of the fake benchmark target |
 | `49-runtime-safety-order.md` | Authoritative pre-load safety sequence: fake data wrapper → fail-closed factor wrapper → no-load target checker → workload |
+| `50-sustained-load-acceptance.md` | Separates short mechanism probes from sustained p95 evidence, defines bounded soak acceptance and records the current v1 same-key limitation before cross-sectional claims |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
@@ -85,6 +86,7 @@ Faysk/inalpha
 | `tools/issue107_factor_macro_probe.py` | Safe full-stack cold/warm factor macro probe with factor→data HTTP, fake-provider and pool-counter deltas |
 | `tools/issue107_runner_poll_probe.py` | Live-runner-like fresh poll probe with aligned/staggered scheduling and peak in-flight pool/provider sampling |
 | `tools/issue107_mixed_workload_probe.py` | Combined factor macro + runner fresh polling + DB/non-DB control workload for issue-level reproduction |
+| `tools/issue107_sustained_mixed_probe.py` | Bounded sustained mixed-load soak probe for percentile/stability evidence; current v1 repeats one factor key per cycle and is stress evidence until unique-symbol mode is added |
 | `tools/prepare_issue107_local.ps1` | Windows PowerShell preflight/materialization helper; refuses dirty/drifted/tracked destinations and never applies production changes |
 | `tools/prepare_issue107_local.sh` | Bash/WSL/Linux equivalent of the safe preflight/materialization helper |
 | `tools/issue107_capture_env.ps1` | Creates a local baseline/candidate evidence directory and records non-secret revision/tool/host metadata; never uploads results |
