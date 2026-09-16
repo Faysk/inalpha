@@ -34,7 +34,7 @@ Faysk/inalpha
 | `08-pr-draft.md` | Draft upstream PR description/checklist |
 | `09-working-principles.md` | Contribution discipline: evidence, invariants, smallest justified change, regression mindset |
 | `10-active-investigation.md` | Current confirmed static findings, sharpened hypotheses, and next runtime decision gate |
-| `11-local-test-runbook.md` | Exact local setup, baseline checks, diagnostic commands, cleanup, and evidence capture sequence |
+| `11-local-test-runbook.md` | Authoritative local setup/baseline/safety/decision sequence, now including sustained O-stage acceptance |
 | `12-static-capacity-model.md` | Per-worker DB capacity model, exact macro fan-out, timeout cascade, H8/H9/H10 interactions |
 | `13-caller-backpressure-matrix.md` | Factor/paper/research/dashboard/orchestration behavior if backfill is busy or fails |
 | `14-candidate-fix-a-narrow-db-lease.md` | Prepared minimal candidate that releases DB capacity during external provider I/O; not selected until measured |
@@ -63,24 +63,25 @@ Faysk/inalpha
 | `37-existing-db-http-separation-precedent.md` | Existing live-runner M-1 rule and implementation: short DB read → external HTTP → short DB write, directly matching Candidate A's intended resource ordering |
 | `38-runner-poll-harness.md` | Live-runner-like fresh poll harness, aligned-vs-stagger control and in-flight DB/provider sampling |
 | `39-mixed-workload-harness.md` | Combined cold factor/macro + runner polling + health/openapi workload used for the issue-level before/after decision gate; factor startup safety is governed by `49-runtime-safety-order.md` |
-| `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus contributor-diagnostic/safety-helper materialization and cleanup workflow for Windows/WSL/Linux |
+| `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus hardened contributor diagnostics/safety-helper materialization and cleanup workflow |
 | `41-benchmark-db-state-determinism.md` | Dedicated resettable `inalpha_issue107` database and factor-cache/DB-cache discipline so cold/warm and before/after runs are comparable |
 | `42-runtime-readiness-static-validation.md` | Static check that diagnostics match current pytest, auth, schemas, venue/timeframe support, environment loading and Candidate A correctness caveats before runtime |
 | `43-candidate-a-overlap-write-correctness.md` | Explicit guard against overstating UPSERT safety; same-key mutable-candle completion inversion is tested only if H4 proves material overlap |
-| `44-runtime-execution-manifest.md` | Stable A–N runtime scenario names, exact controlled inputs, result filenames and baseline→candidate comparison discipline; sustained acceptance is added by `50-sustained-load-acceptance.md` |
+| `44-runtime-execution-manifest.md` | Stable A–O runtime scenario names, controlled inputs, result filenames and baseline→candidate comparison discipline |
 | `45-evidence-capture-helper.md` | Windows evidence-session workflow that records revision/tool/host metadata outside the Git working tree without dumping secrets |
 | `46-data-regression-ci-enforcement-gap.md` | Current CI runs data Ruff/mypy but not data pytest; records options without automatically broadening #107 into a CI-policy change |
 | `47-benchmark-reset-safety.md` | Fail-closed dedicated-DB reset workflow so cold-state benchmarks cannot silently truncate the ordinary development database |
 | `48-factor-target-fail-closed.md` | Fail-closed factor wrapper so factor/mixed load cannot silently route to the ordinary data-service instead of the fake benchmark target |
-| `49-runtime-safety-order.md` | Authoritative pre-load safety sequence: fake data wrapper → fail-closed factor wrapper → no-load target checker → workload |
+| `49-runtime-safety-order.md` | Authoritative pre-load chain including scheduler isolation, fake/blocked OHLCV routing, factor pinning and no-load verification |
 | `50-sustained-load-acceptance.md` | Separates short mechanism probes from sustained p95 evidence and defines O1 cross-sectional, O2 same-key stress and optional O3 stagger acceptance scenarios |
 | `51-sustained-results-template.md` | Three-run sustained evidence template with separate latency/error/backlog/provider/pool signals, scheduler-lag accounting and before→after wording guard |
-| `52-provider-isolation-and-soak-hardening.md` | Harness review that disables the startup constituent scheduler, blocks non-fake OHLCV registry venues, avoids schedule catch-up bursts and adds provider/pool counter deltas |
+| `52-provider-isolation-and-soak-hardening.md` | Harness review that disables startup constituent scheduling, blocks non-fake OHLCV venues, avoids schedule catch-up bursts and adds provider/pool counter deltas |
+| `53-candidate-a-current-main-revalidation.md` | Revalidates the unapplied narrow DB-lease candidate against current route/storage/shared-DB/test semantics and records what would and would not change |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
-| `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
+| `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A property regression with pool=2, four simultaneous provider waits and background scheduler isolation |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
 | `tools/test_factor_live_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold identical live score requests coalesce or duplicate main data fetches |
-| `tools/issue107_slow_data_app.py` | Hardened fake provider wrapper: requested OHLCV venues are deterministic fakes, other registered OHLCV venues fail closed, startup constituent scheduler is forced off, and provider/HTTP/thread/pool state is exposed |
+| `tools/issue107_slow_data_app.py` | Hardened fake provider wrapper: requested OHLCV venues deterministic, other registered OHLCV venues fail closed, startup constituent scheduler forced off, provider/HTTP/thread/pool state exposed |
 | `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles, worker PID distribution and pool-state samples; fails closed unless Binance is fake |
 | `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence |
 | `tools/issue107_factor_app.py` | Contributor-only factor wrapper that refuses startup unless its configured data-service URL matches the expected local fake target |
