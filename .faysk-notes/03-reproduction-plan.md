@@ -111,9 +111,17 @@ For single-worker diagnostics, the pool default `max_size=10` makes the 8→12 t
 
 For production-like testing, repeat with `data WORKERS=2`; remember each worker owns its own pool and process-local connector/gate state.
 
-### Parallel probe
+### Parallel probes
 
-While slow backfills are in flight, continuously probe a lightweight DB-backed endpoint such as `/health` and/or a known `/bars` query.
+While slow backfills are in flight, continuously probe:
+
+```text
+/openapi.json    # non-DB control
+/health          # DB-backed canary
+and/or /bars     # DB-backed real read path
+```
+
+If `/openapi.json` stays responsive while `/health`/`/bars` stalls, that is stronger evidence for DB-capacity starvation than a generic server/event-loop stall.
 
 Collect:
 
@@ -130,7 +138,7 @@ Collect:
 Evidence for DB-pool starvation includes:
 
 - latency/error cliff near pool occupancy,
-- DB-backed probes slow while requests wait on fake provider work,
+- DB-backed probes slow while non-DB control remains responsive,
 - pool wait/timeout evidence,
 - provider concurrency itself remains controlled.
 
@@ -219,6 +227,14 @@ Record:
 - retry/error behavior,
 - effect on data-service latency while factor traffic is present.
 
+Also test one restart/resume-style burst if practical:
+
+```text
+multiple running strategies resume
+→ concurrent build/warmup
+→ fresh bar requests overlap
+```
+
 Do not alter live-runner code during the reproduction phase.
 
 ---
@@ -241,7 +257,7 @@ Record the exact workload so it can be repeated byte-for-byte/config-for-config 
 
 ---
 
-## 9. Scenario F — same-key duplication check
+## 9. Scenario F — same-key backfill duplication check
 
 ### Purpose
 
@@ -272,7 +288,58 @@ Do not implement data-side single-flight if duplication is negligible.
 
 ---
 
-## 10. Metrics to capture
+## 10. Scenario G — cold macro-cache stampede
+
+### Purpose
+
+Separate ordinary per-request macro fan-out from **duplicate same-key macro work across concurrent factor requests**.
+
+Current macro cache is module-level and works after population, but `_fetch_macro_series()` performs:
+
+```text
+cache lookup
+→ await fetch
+→ cache put
+```
+
+without a per-key in-flight registry.
+
+First run the pure contributor diagnostic:
+
+```text
+.faysk-notes/tools/test_macro_cache_stampede_draft.py
+```
+
+It uses no DB, data-service or FRED network.
+
+Expected current behavior:
+
+```text
+sequential same-key requests → 1 fetch total
+6 simultaneous cold same-key requests → 6 fetches enter before cache population
+```
+
+Then, only if relevant, test at service level with several concurrent cold live 1d/1wk score/snapshot calls and count:
+
+```text
+unique macro cache keys
+vs
+actual factor→data macro fetches/backfills
+```
+
+This distinguishes:
+
+```text
+18 distinct series once
+from
+18 distinct series × N concurrent callers
+```
+
+Do not add factor-side single-flight unless the second pattern materially contributes to #107.
+
+---
+
+## 11. Metrics to capture
 
 For every scenario:
 
@@ -302,6 +369,7 @@ provider queue/wait behavior
 CPU peak
 memory peak
 client connection/socket observations
+unique work keys vs actual provider/data calls where dedupe is under test
 ```
 
 Where possible separate:
@@ -318,7 +386,7 @@ total request
 
 ---
 
-## 11. Known confounders
+## 12. Known confounders
 
 ### yfinance can return empty on provider failure
 
@@ -340,20 +408,30 @@ A process-local semaphore/lock/cache is duplicated across the two production dat
 
 Do not describe a per-process measurement as a service-global guarantee.
 
+Factor production currently runs one worker, so a module-level factor cache/single-flight would be process-wide in the present topology but must still be described as process-local architecture.
+
 ### Caches
 
 Separate cold-cache and warm-cache runs. Factor macro caching can radically change request fan-out.
 
+For concurrent-cache tests, distinguish:
+
+```text
+cache hit after population
+from
+coalescing while population is still in flight
+```
+
 ---
 
-## 12. Hypotheses to test
+## 13. Hypotheses to test
 
 ### H1 — DB connections held across provider I/O are a major saturation multiplier
 
 Evidence for:
 
 - pool wait grows while provider calls are slow/serialized,
-- unrelated DB-backed endpoints degrade,
+- unrelated DB-backed endpoints degrade while non-DB control remains healthy,
 - shortening DB connection lifetime materially improves the same workload.
 
 ### H2 — excessive expensive backfill concurrency is independently a bottleneck
@@ -370,11 +448,11 @@ Evidence for:
 - large number of short-lived connections,
 - reuse materially lowers p95/errors without changing provider work.
 
-### H4 — duplicate same-key work is material outside the dashboard coalescing path
+### H4 — duplicate same-key backfill work is material outside the dashboard coalescing path
 
 Evidence for:
 
-- provider calls materially exceed unique refresh keys,
+- provider calls materially exceed unique backfill keys,
 - coalescing changes the benchmark.
 
 ### H5 — one provider monopolizes capacity
@@ -387,19 +465,28 @@ Evidence for:
 
 Evidence for:
 
-- failures/latency appear mainly when runner polling overlaps factor traffic,
+- failures/latency appear mainly when runner polling/resume overlaps factor traffic,
 - removing/staggering runner load materially changes results.
 
 ### H7 — event-loop/thread-pool saturation is primary
 
 Evidence for:
 
-- service latency degrades even when DB pool/provider concurrency is not saturated,
+- non-DB control latency degrades even when DB pool/provider concurrency is not saturated,
 - CPU/thread-pool/event-loop symptoms correlate first.
+
+### H8 — cold macro cache stampede amplifies factor→data load
+
+Evidence for:
+
+- simultaneous live requests for the same macro/date keys start duplicate fetches before first cache population;
+- actual macro data calls materially exceed unique macro cache keys;
+- warm/sequential cache behavior is healthy but cold concurrent behavior multiplies traffic;
+- coalescing same-key in-flight work materially reduces the representative workload after primary data bottlenecks are controlled.
 
 ---
 
-## 13. Stop conditions
+## 14. Stop conditions
 
 Stop/ramp down if:
 
@@ -411,7 +498,7 @@ Stop/ramp down if:
 
 ---
 
-## 14. Baseline acceptance
+## 15. Baseline acceptance
 
 The reproduction phase is complete when we can answer:
 
@@ -420,9 +507,10 @@ The reproduction phase is complete when we can answer:
 3. What resource saturates first?
 4. Does `/backfill/bars` holding `DBConn` across provider I/O materially contribute?
 5. Does live macro fan-out still reproduce the original pressure pattern?
-6. What error/result mode appears first?
-7. Is same-key duplication meaningful outside dashboard coalescing?
-8. Is the problem sustained overload rather than reload/startup blips?
-9. What is the smallest intervention likely to eliminate `DATA_SERVICE_UNREACHABLE` in the representative mixed workload?
+6. Does cold concurrent macro traffic duplicate same-key work materially, or does caching already make it negligible in practice?
+7. What error/result mode appears first?
+8. Is same-key backfill duplication meaningful outside dashboard coalescing?
+9. Is the problem sustained overload rather than reload/startup blips?
+10. What is the smallest intervention likely to eliminate `DATA_SERVICE_UNREACHABLE` in the representative mixed workload?
 
 Results go into `04-baseline-results.md`.
