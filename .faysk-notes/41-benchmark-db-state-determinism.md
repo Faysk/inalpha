@@ -72,15 +72,30 @@ docker compose up -d postgres
 cd ..
 ```
 
-Create only if absent:
+### Bash / WSL — create only if absent
 
 ```bash
-docker compose -f infra/docker-compose.yml exec -T postgres \
-  psql -U quant -d postgres -v ON_ERROR_STOP=1 -c \
-  "SELECT 'CREATE DATABASE inalpha_issue107' WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = 'inalpha_issue107')\gexec"
+if ! docker compose -f infra/docker-compose.yml exec -T postgres \
+  psql -U quant -d postgres -Atc \
+  "select 1 from pg_database where datname = 'inalpha_issue107';" | grep -qx '1'; then
+  docker compose -f infra/docker-compose.yml exec -T postgres \
+    psql -U quant -d postgres -v ON_ERROR_STOP=1 \
+    -c "CREATE DATABASE inalpha_issue107;"
+fi
 ```
 
-PowerShell can run the same `docker compose ... psql` command as one line.
+### PowerShell — create only if absent
+
+```powershell
+$exists = docker compose -f infra/docker-compose.yml exec -T postgres `
+  psql -U quant -d postgres -Atc "select 1 from pg_database where datname = 'inalpha_issue107';"
+
+if (($exists | Out-String).Trim() -ne '1') {
+    docker compose -f infra/docker-compose.yml exec -T postgres `
+      psql -U quant -d postgres -v ON_ERROR_STOP=1 `
+      -c "CREATE DATABASE inalpha_issue107;"
+}
+```
 
 Verify:
 
