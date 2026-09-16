@@ -52,6 +52,87 @@ checkout DB connection
 
 This confirms the **lifetime behavior**. It does **not** yet prove that DB-pool pressure is the root cause of #107.
 
+### Pool size and health path
+
+The shared DB pool defaults to:
+
+```text
+min_size = 2
+max_size = 10
+timeout = 30s
+```
+
+`data-service` initializes that pool without overriding the defaults.
+
+`GET /health` itself depends on `DBConn` before running its `SELECT 1`. Therefore a request can be unable to enter the health handler while waiting for a saturated pool.
+
+Current production compose checks `/health` with a **2-second Docker healthcheck timeout** and runs `data-service` with **2 workers**.
+
+This creates an important operational hypothesis:
+
+```text
+slow backfills retain DB connections
+→ one worker exhausts its 10-slot DB pool
+→ unrelated /bars and /health requests assigned to that worker wait for DB capacity
+→ healthcheck may time out before the pool's own 30s timeout
+→ callers may observe latency/timeouts even though the process/event loop is still alive
+```
+
+This needs runtime evidence before being described as a production root cause.
+
+### Timeout alignment and potential retry amplification
+
+Factor's `DataClient` uses a 30-second default HTTP timeout for `GET /bars`.
+
+The data DB pool also has a 30-second checkout timeout.
+
+Factor then retries connection/request-level `httpx.RequestError` up to 3 times with short backoff.
+
+So pool starvation has a plausible path to the exact symptom named by #107:
+
+```text
+GET /bars accepted by data-service
+→ request waits for DBConn
+→ caller reaches ~30s HTTP timeout
+→ httpx timeout is classified as RequestError
+→ factor retries
+→ repeated requests add more pressure
+→ eventually DATA_SERVICE_UNREACHABLE
+```
+
+This is now hypothesis **H1b**. It is stronger than the original generic "data-service is saturated" theory because every step is supported by current code, but it still needs runtime reproduction.
+
+Do not yet claim that timed-out server work continues after client disconnect; cancellation behavior must be observed separately.
+
+### Provider serialization can amplify DB retention
+
+The yfinance connector intentionally serializes `history()` calls per process behind `_FETCH_LOCK` and a minimum request interval. It also uses a dedicated bounded thread pool.
+
+That means a burst of yfinance backfills can become:
+
+```text
+request A: DBConn + Yahoo lock + provider I/O
+request B: DBConn + waits for Yahoo lock
+request C: DBConn + waits for Yahoo lock
+...
+```
+
+The serialization is correct for Yahoo rate-limit/data-quality protection. The #107 concern is the **resource ordering**: requests may own DB capacity while queued behind a provider-level lock.
+
+### FRED fan-out uses external threads without a local data-service gate
+
+FRED `fetch_bars()` runs its synchronous client through `asyncio.to_thread`. There is no FRED-specific semaphore in the connector.
+
+Live/current factor macro calculation can concurrently request roughly 18 FRED series. Each fresh series request can trigger `/backfill/bars`.
+
+This gives us a second deterministic workload shape to reproduce after the synthetic slow-connector test:
+
+```text
+factor macro gather (~18)
+→ multiple fresh FRED backfills
+→ each data request obtains DBConn before external FRED I/O
+```
+
 ### Factor client lifetime
 
 `get_engine()` creates a new `FactorEngine` for each factor request.
@@ -101,10 +182,13 @@ Therefore a new busy/backpressure response cannot be evaluated only at the data-
 ### Confirmed
 
 - route-scoped `DBConn` holds a pool connection across the current `/backfill/bars` handler lifetime;
-- pool default is 10 connections per process;
-- production compose currently configures two data workers;
+- pool default is 10 connections per process with 30s checkout timeout;
+- `/health` also requires `DBConn` before its handler executes;
+- production compose currently configures two data workers and a 2s `/health` probe timeout;
 - yfinance serializes `history()` calls per process;
+- FRED calls synchronous provider code through `asyncio.to_thread` without a data-service admission gate;
 - factor creates short-lived `httpx.AsyncClient` instances through `_fetch_df()`;
+- factor `GET /bars` timeout is also 30s and request-level failures can be retried up to 3 times;
 - live macro factor fetches can fan out concurrently;
 - dashboard already coalesces same-key chart backfills;
 - factor/research best-effort backfill semantics differ from orchestration's explicit HTTP-error semantics.
@@ -112,36 +196,68 @@ Therefore a new busy/backpressure response cannot be evaluated only at the data-
 ### Still hypotheses
 
 - DB-pool exhaustion is the first resource that causes #107;
+- pool wait + factor timeout/retry is the dominant path to `DATA_SERVICE_UNREACHABLE`;
 - shortening DB lifetime alone fixes the representative workload;
 - a backfill admission gate is necessary;
 - connection pooling in factor materially affects p95/error rate;
 - cross-service duplicate backfills are frequent enough to justify data-side single-flight;
-- live-runner synchronization is still a significant contributor after current mitigations.
+- live-runner synchronization is still a significant contributor after current mitigations;
+- client disconnect leaves timed-out server work alive long enough to amplify pressure.
 
 Do not write PR language that treats any item in the second list as proven until runtime evidence exists.
 
 ---
 
-## 4. Immediate runtime sequence
+## 4. Deterministic diagnostic prepared
+
+A contributor-only draft test now exists at:
+
+```text
+.faysk-notes/tools/test_backfill_pool_pressure_draft.py
+```
+
+It uses a fully fake connector that blocks provider I/O and performs **no external network calls**.
+
+The test has a control and a pressure case:
+
+```text
+9 blocked backfills
+→ 9/10 DB pool slots occupied
+→ /health should still acquire the remaining connection
+
+10 blocked backfills
+→ 10/10 DB pool slots occupied
+→ /health should remain blocked until the fake provider releases
+```
+
+This does not by itself reproduce the full #107 mixed workload. Its purpose is narrower: prove whether current route/resource ordering can starve an unrelated DB-backed endpoint exactly as static inspection predicts.
+
+When run locally, preserve the result even if it disproves H1.
+
+---
+
+## 5. Immediate runtime sequence
 
 Once the contributor machine has the repository locally:
 
 ```text
 1. verify exact upstream commit
-2. start unmodified stack
+2. start unmodified stack / test DB
 3. run existing data/factor tests
-4. establish one-worker diagnostic run
-5. reproduce slow-provider/backfill pressure with fake/delayed connector
-6. inspect DB-pool behavior and request latency
-7. repeat with production-like data WORKERS=2
-8. exercise live factor + macro fan-out
-9. add runner-like traffic only after isolated scenarios are understood
-10. record baseline before any production change
+4. copy/run the contributor-only pool-pressure diagnostic
+5. record whether 9-vs-10 behavior matches H1
+6. establish one-worker service-level diagnostic run
+7. reproduce slow-provider/backfill pressure over real HTTP
+8. inspect DB-pool behavior and request latency
+9. repeat with production-like data WORKERS=2
+10. exercise live factor + macro fan-out
+11. add runner-like traffic only after isolated scenarios are understood
+12. record baseline before any production change
 ```
 
 ---
 
-## 5. First decision gate
+## 6. First decision gate
 
 After the initial deterministic reproduction, choose **one** first intervention based on evidence:
 
@@ -161,7 +277,7 @@ none of the above explains failure
 
 ---
 
-## 6. Current stance
+## 7. Current stance
 
 We continue working while feedback is pending, but we separate:
 
