@@ -15,6 +15,9 @@ sources=(
   ".faysk-notes/tools/issue107_factor_macro_probe.py"
   ".faysk-notes/tools/issue107_runner_poll_probe.py"
   ".faysk-notes/tools/issue107_mixed_workload_probe.py"
+  ".faysk-notes/tools/issue107_capture_env.ps1"
+  ".faysk-notes/tools/issue107_benchmark_db.ps1"
+  ".faysk-notes/tools/issue107_benchmark_db.sh"
 )
 
 destinations=(
@@ -27,6 +30,9 @@ destinations=(
   "services/factor/issue107_factor_macro_probe.py"
   "services/factor/issue107_runner_poll_probe.py"
   "services/factor/issue107_mixed_workload_probe.py"
+  "scripts/issue107_capture_env.ps1"
+  "scripts/issue107_benchmark_db.ps1"
+  "scripts/issue107_benchmark_db.sh"
 )
 
 require_cmd() {
@@ -121,7 +127,7 @@ for i in "${!sources[@]}"; do
 done
 
 echo
-echo "Diagnostic files are intentionally UNTRACKED:"
+echo "Diagnostic/helper files are intentionally UNTRACKED:"
 git status --short
 
 echo
@@ -135,5 +141,9 @@ for cmd in docker uv python node pnpm; do
 done
 
 echo
-echo "Next: follow notes/issue-107:.faysk-notes/11-local-test-runbook.md."
-echo "Cleanup later with: bash prepare_issue107_local.sh cleanup"
+echo "Next: read the runbook without switching branches:"
+echo "  git show origin/notes/issue-107:.faysk-notes/11-local-test-runbook.md"
+echo "Useful local helpers now materialized under scripts/:"
+echo "  scripts/issue107_capture_env.ps1"
+echo "  scripts/issue107_benchmark_db.sh"
+echo "Cleanup later with: bash $0 cleanup"
