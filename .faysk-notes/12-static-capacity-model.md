@@ -52,18 +52,15 @@ So the scarce DB lease spans external provider I/O.
 
 `latest_bar_ts()` executes a SELECT before the first provider call. The shared pool only configures `row_factory`; it does not enable autocommit.
 
-Psycopg 3 defaults `autocommit=False`, and its documentation states that any database operation starts a transaction by default. The pool connection context commits/rolls back on context exit.
+Psycopg 3 defaults `autocommit=False`, and its pool context finalizes a transaction when the connection context exits. The first external provider wait can therefore occur while the connection is not only reserved from the pool, but also has a read transaction opened by `latest_bar_ts()`.
 
-That means the first external provider wait can occur while the connection is not only reserved from the pool, but also has an open transaction started by `latest_bar_ts()`.
+`insert_bars()` explicitly commits every batch, so current backfill is not one request-wide transaction. After a batch commit, later provider waits can still retain the connection even when no transaction is active.
 
-Reference:
+Do **not** overstate transaction age as the root cause; the verified resource-lifetime property is broader:
 
-- https://www.psycopg.org/psycopg3/docs/basic/transactions.html
-- https://www.psycopg.org/psycopg3/docs/api/pool.html
-
-After `insert_bars()` explicitly commits a batch, later provider waits in the same request can still retain the connection even when no transaction is active.
-
-Do **not** overstate this as the root cause; it is a verified resource-lifetime property.
+```text
+request-long DB lease spans external provider wait
+```
 
 ---
 
@@ -82,7 +79,7 @@ So current `panel_score` still produces concurrent GET traffic, but deliberately
 
 This is materially different from the original June wording of #107.
 
-### live macro path — still a burst source
+### live macro path — exact default fan-out is 18 unique series
 
 For current/live factor scoring:
 
@@ -93,19 +90,53 @@ as_of=None or near-now
 → macro computation fresh=True
 ```
 
-`_compute_macro()` gets all required FRED series with unbounded `asyncio.gather` for that request. The code comment documents a daily snapshot with roughly **18 macro series**.
-
-Each macro series eventually goes through `_fetch_df()`, which creates a fresh factor `DataClient`, and each `DataClient` creates its own `httpx.AsyncClient`.
-
-On a macro-cache miss, one factor request can therefore produce a burst approximately shaped as:
+`MacroAdapter` currently exposes 26 macro factor specs backed by **18 unique FRED series**:
 
 ```text
-~18 FRED series
-→ ~18 factor DataClients
-→ concurrent fresh backfill + bars reads
+8 daily
+10 monthly
+= 18 unique series
 ```
 
-Important qualifier: macro live cache TTL is 1 hour, so this path is **bursty rather than permanently sustained** after the cache is warm. It remains especially relevant after factor restart, cache expiration, or a new uncached series/date combination.
+For a default live `1d`/`1wk` score or snapshot with `factor_ids=None`, `_computable_ids()` includes the available macro specs and `required_series()` resolves those exact 18 unique series.
+
+`_compute_macro()` then launches them concurrently with `asyncio.gather`.
+
+One cold default request is therefore shaped as:
+
+```text
+18 unique FRED series
+→ 18 factor DataClients / _fetch_df operations
+→ up to 18 concurrent fresh backfill + bars paths
+```
+
+This is the legitimate per-request fan-out. It should not be confused with duplicate work.
+
+Macro live cache TTL is 1 hour, so this path is **bursty rather than permanently sustained** after successful cache population.
+
+### H8 — concurrent cold callers can multiply the 18-series burst
+
+The macro cache performs:
+
+```text
+cache lookup
+→ await fetch
+→ cache put
+```
+
+with no per-key in-flight coalescing.
+
+Therefore `N` simultaneous cold default requests can theoretically produce up to:
+
+```text
+18 unique macro keys × N callers
+```
+
+actual fetch attempts before first population completes.
+
+The unique work set is still only 18 keys; the excess is duplicate same-key work.
+
+This multiplier is H8 and requires service-level measurement before any factor-side fix is justified.
 
 ---
 
@@ -138,35 +169,39 @@ for each poll.
 
 There is currently no randomized jitter in the main polling loop. Runs with the same timeframe, especially runs resumed/startup together, can therefore align into request bursts.
 
-This does not prove that they are synchronized in production; it gives us a runtime condition to measure.
+Paper startup also resumes persisted `running` runs by launching their tasks. Each build performs fresh warmup, and successful builds then capture a factor baseline. That gives us a natural current startup burst to test rather than inventing arbitrary runner synchronization.
+
+This does not prove the burst is large enough to cause #107; it gives a concrete workload to measure.
 
 ---
 
 ## 4. Static load arithmetic
 
-### Scenario A — cold/live macro burst only
+### Scenario A — one cold/live default macro burst
 
-Approximate request burst:
+Exact distinct macro requests:
 
 ```text
 18 fresh macro series
 2 data workers
-≈ 9 requests/worker if perfectly balanced
+≈ 9 requests/worker only if perfectly balanced
 ```
 
 Pool capacity is 10 per worker.
 
-Even under ideal balance, this is already close to the worker pool ceiling **if each request retains its DB connection while waiting for the external provider**.
+Even under ideal balance, this is close to the worker pool ceiling **if each request retains its DB connection while waiting for the external provider**.
 
-It leaves very little headroom for:
+It leaves little headroom for:
 
-- the main price-series backfill/read,
-- live-runner polls,
-- dashboard reads,
-- `/health`,
+- the main price-series backfill/read;
+- live-runner polls;
+- dashboard reads;
+- `/health`;
 - research/orchestration traffic.
 
-### Scenario B — macro + modest live overlap
+But worker distribution is not deterministic, so do not claim a guaranteed 9/9 split.
+
+### Scenario B — one macro request + modest live overlap
 
 Illustrative only:
 
@@ -176,11 +211,22 @@ Illustrative only:
 = 22 concurrent backfill-shaped requests
 ```
 
-Perfectly balanced across 2 workers would be ~11 per worker, already above `max_size=10`.
+Perfectly balanced across 2 workers would be 11 per worker, already above `max_size=10`.
 
-The actual distribution may be uneven, so one worker can queue before the container-wide theoretical 20-connection total is reached.
+Actual distribution can be uneven, so one worker can queue earlier.
 
-### Scenario C — yfinance serialization
+### Scenario C — several simultaneous cold macro callers
+
+If H8 manifests strongly:
+
+```text
+2 cold default macro callers → up to 36 macro fetch attempts
+3 cold default macro callers → up to 54 macro fetch attempts
+```
+
+Again, the unique macro key set remains 18. Actual duplicate ratio must be measured.
+
+### Scenario D — yfinance serialization
 
 Within each data worker, yfinance history calls are protected by a process-local `_FETCH_LOCK`.
 
@@ -197,6 +243,23 @@ So **provider concurrency can be 1 while DB occupancy is much higher**.
 
 This is exactly why limiting only provider calls after DB checkout can move the bottleneck instead of removing it.
 
+### Scenario E — shared default-executor queueing
+
+FRED and several other data connectors wrap synchronous libraries with `asyncio.to_thread`. Current repo search finds no custom `set_default_executor` configuration.
+
+If synchronous provider jobs exceed the runtime's available default-executor threads, some backfill requests can wait in the executor queue.
+
+Under current route ordering those queued requests may already own DB connections:
+
+```text
+DBConn acquired
+→ latest_bar_ts
+→ to_thread job queued / running
+→ DB lease retained the whole time
+```
+
+This is H10. Runtime thread capacity depends on Python/CPU/deployment and must be measured, not guessed.
+
 ---
 
 ## 5. Timeout cascade hypothesis
@@ -209,7 +272,7 @@ factor GET /bars client timeout  30 s
 factor fresh backfill timeout    60 s
 ```
 
-Factor GETs retry connection-level `httpx.RequestError` up to 3 attempts with short backoff.
+Factor GETs retry connection/request-level `httpx.RequestError` up to 3 attempts with short backoff.
 
 A plausible saturation chain is therefore:
 
@@ -225,7 +288,7 @@ slow/queued backfills retain DB connections
 
 This is **H1b**, not yet a measured sequence.
 
-The baseline should collect timing evidence showing whether the client deadline is actually reached because of DB checkout wait.
+Whether the retry overlaps older server work is a separate H9 runtime question. A client timeout does not by itself prove that the server/provider task stopped or continued.
 
 ---
 
@@ -243,11 +306,16 @@ Therefore under full pool exhaustion:
 → may never reach the handler's db_status="error" fallback
 ```
 
-If the pool checkout itself times out, the generic service error handler sees an unexpected exception and can return `500 INTERNAL_ERROR`.
+If the pool checkout itself times out, the generic service error handler can return `500 INTERNAL_ERROR`.
 
-Production compose probes `/health` every 10 seconds with a short healthcheck timeout. So health latency/status is a useful saturation signal, but it is not a pure process-liveness measurement.
+Production compose probes `/health` every 10 seconds with a short timeout. Health latency/status is a useful saturation signal, but it is not a pure process-liveness measurement.
 
-This is adjacent design debt, not automatically part of the #107 fix.
+Use `/openapi.json` as a non-DB control in the contributor harness:
+
+```text
+openapi fast + health blocked
+→ stronger evidence of DB-backed capacity starvation
+```
 
 ---
 
@@ -268,6 +336,13 @@ Current `main` has already changed important pieces:
 - factor GET retries absorb short connection blips;
 - macro values use a one-hour live cache after successful fetch.
 
+At the same time, current code still has:
+
+- exact 18-series default cold macro fan-out;
+- no in-flight coalescing for same macro cache key;
+- fresh runner warmups/polls;
+- request-long DB leases across backfill provider waits.
+
 So we should not expect the historical trigger to reproduce identically.
 
 Our runtime goal is to reproduce the **capacity failure class**, not to force obsolete traffic behavior back into the system.
@@ -276,32 +351,51 @@ Our runtime goal is to reproduce the **capacity failure class**, not to force ob
 
 ## 8. Runtime predictions
 
-### Prediction P1 — DB lease mechanism
+### Prediction P1 — controlled DB lease mechanism
 
-With a fake connector that blocks externally:
+The in-process contributor diagnostic overrides DB pool max size to 2.
 
-```text
-9 concurrent blocked backfills
-→ /health still obtains the 10th pool connection
-
-10 concurrent blocked backfills
-→ /health waits until a backfill releases capacity
-```
-
-The contributor diagnostic `tools/test_backfill_pool_pressure_draft.py` is built specifically to test this.
-
-### Prediction P2 — candidate DB-lifetime fix
-
-If DB checkout is narrowed so provider I/O happens without holding a connection:
+Current-main prediction:
 
 ```text
-10 blocked provider calls
-→ /health should remain responsive
+1 blocked fake-provider backfill
+→ one DB lease retained
+→ /health still works
+
+2 blocked fake-provider backfills
+→ both DB leases retained
+→ /openapi.json still works
+→ /health waits until provider release
 ```
 
-This prediction gives us a clean before/after regression if H1 is confirmed.
+This avoids coupling the diagnostic to the ordinary `max_size=10` default.
 
-### Prediction P3 — admission gate after DB checkout is insufficient
+### Prediction P2 — Candidate A DB-lifetime fix
+
+Post-fix regression uses the same 2-connection test pool but starts 4 fake-provider waits:
+
+```text
+4 requests > 2 pool slots
+→ all four complete short latest_bar_ts DB phases
+→ all four reach blocked provider I/O
+→ /health still acquires DB
+```
+
+On current route-level `DBConn`, only the first two can reach provider I/O.
+
+### Prediction P3 — DB-side state
+
+During current-main **first provider wait** after `latest_bar_ts()`:
+
+```text
+pg_stat_activity may show one idle-in-transaction session per retained request
+```
+
+After Candidate A, that per-request open transaction should no longer persist during provider wait.
+
+Plain `idle` sessions are less diagnostic because PostgreSQL cannot tell us from state alone whether an idle connection is currently checked out vs sitting available in the client pool.
+
+### Prediction P4 — admission gate after DB checkout is insufficient
 
 If a semaphore is added *inside* the current handler after the `DBConn` dependency has already resolved:
 
@@ -309,13 +403,25 @@ If a semaphore is added *inside* the current handler after the `DBConn` dependen
 waiting requests can still reserve DB pool slots
 ```
 
-The 10-request diagnostic may continue to starve `/health` even though external provider concurrency is bounded.
+The endpoint-level pool diagnostic can still fail even though external provider concurrency is bounded.
 
-### Prediction P4 — gate before DB checkout
+### Prediction P5 — gate before DB checkout
 
 If admission control is ultimately required, it must occur before long-lived scarce-resource checkout (or DB lifetime must first be narrowed).
 
 This matches an existing project pattern in Evolver: its dispatcher acquires a semaphore before entering `async with get_conn()`.
+
+### Prediction P6 — async vs thread-backed fake provider
+
+If H1 is mainly about lease ordering, both fake modes should show DB-backed starvation on current code:
+
+```text
+asyncio.sleep provider wait
+and
+asyncio.to_thread(sync sleep) provider wait
+```
+
+Thread mode may additionally show executor queueing or sync work surviving coroutine cancellation, which helps separate H9/H10 from H1.
 
 ---
 
@@ -323,12 +429,13 @@ This matches an existing project pattern in Evolver: its dispatcher acquires a s
 
 H1 is weakened if runtime testing shows one or more of the following:
 
-- 10 blocked provider calls do **not** starve unrelated DB-backed endpoints;
+- a fully occupied controlled test pool does **not** starve unrelated DB-backed endpoints;
 - pool wait remains negligible while client timeouts occur elsewhere;
+- non-DB control degrades first alongside DB-backed endpoints;
 - event-loop lag/CPU rises first while pool capacity remains available;
-- requests are rejected before reaching DB dependency resolution;
 - connection churn/socket exhaustion occurs independently of DB pressure;
-- a production-like mixed workload fails with plenty of free DB capacity.
+- a production-like mixed workload fails with plenty of available DB capacity;
+- narrowing DB lease does not improve the exact same workload.
 
 If that happens, we move to the next measured constraint rather than forcing a DB-lifetime patch.
 
@@ -336,6 +443,6 @@ If that happens, we move to the next measured constraint rather than forcing a D
 
 ## Current strongest static hypothesis
 
-> `/backfill/bars` currently couples external-provider latency to DB-pool occupancy. Under concurrent fresh traffic, that coupling can consume per-worker DB capacity and delay unrelated reads until callers time out and retry.
+> `/backfill/bars` currently couples external-provider/executor latency to DB-pool occupancy. Under concurrent fresh traffic, that coupling can consume per-worker DB capacity and delay unrelated reads until callers time out and retry.
 
 The mechanism is strongly supported by code inspection. Its **magnitude and causal role in #107 remain runtime questions**.
