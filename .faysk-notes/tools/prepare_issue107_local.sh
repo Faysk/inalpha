@@ -12,6 +12,7 @@ sources=(
   ".faysk-notes/tools/issue107_slow_data_app.py"
   ".faysk-notes/tools/issue107_load_probe.py"
   ".faysk-notes/tools/issue107_timeout_persistence_probe.py"
+  ".faysk-notes/tools/issue107_factor_app.py"
   ".faysk-notes/tools/issue107_factor_macro_probe.py"
   ".faysk-notes/tools/issue107_runner_poll_probe.py"
   ".faysk-notes/tools/issue107_mixed_workload_probe.py"
@@ -27,6 +28,7 @@ destinations=(
   "services/data/issue107_slow_data_app.py"
   "services/data/issue107_load_probe.py"
   "services/data/issue107_timeout_persistence_probe.py"
+  "services/factor/issue107_factor_app.py"
   "services/factor/issue107_factor_macro_probe.py"
   "services/factor/issue107_runner_poll_probe.py"
   "services/factor/issue107_mixed_workload_probe.py"
@@ -143,6 +145,7 @@ done
 echo
 echo "Next: read the runbook without switching branches:"
 echo "  git show origin/notes/issue-107:.faysk-notes/11-local-test-runbook.md"
+echo "Factor/mixed benchmarks must use services/factor/issue107_factor_app.py (fail-closed data target)."
 echo "Useful local helpers now materialized under scripts/:"
 echo "  scripts/issue107_capture_env.ps1"
 echo "  scripts/issue107_benchmark_db.sh"
