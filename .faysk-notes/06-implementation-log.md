@@ -205,6 +205,43 @@ short DB checkout for latest_bar_ts
 
 The strongest reason to test it first is compatibility: if it solves the representative workload, we can improve capacity **without adding a new HTTP busy contract, guessed concurrency limit, factor change, live-runner change, or `_shared` change**.
 
+### Error classification / production-like harness / fallback designs
+
+Further static work refined what the observed failure code can actually mean and prepared the next tests without changing production code.
+
+- `DATA_SERVICE_UNREACHABLE` in factor is emitted after `httpx.RequestError`; this includes read/connect/write/pool timeout/error subclasses, so the code does **not** prove literal TCP connection refusal.
+- DB pool checkout timeout and factor GET timeout are both currently about 30 seconds. Under pool starvation, whichever deadline fires first can make the same internal condition appear either as HTTP `500 INTERNAL_ERROR` (server pool timeout) or `ReadTimeout` → retries → `DATA_SERVICE_UNREACHABLE` (client timeout).
+- The factor fresh path uses a 60-second POST backfill timeout followed by a 30-second GET; because the POST helper ignores plain non-2xx status, a server-side pool-timeout response can be followed by another DB-backed GET and obscure where the pressure began.
+- Paper startup resumes all persisted running live runs by creating their tasks in a loop. Each build performs fresh warmup, giving us a real current **resume thundering-herd** workload to test later without assuming steady-state polls are perfectly synchronized.
+
+Diagnostics were strengthened:
+
+- the in-process 10-backfill test now probes `/openapi.json` as a non-DB control; expected baseline shape is “OpenAPI responsive, DB-backed `/health` blocked,” which distinguishes DB-pool starvation from generic event-loop starvation;
+- a production-like fake-provider wrapper and load probe were prepared for real Uvicorn `--workers 1` and `--workers 2` runs;
+- the load generator deliberately raises its own HTTP connection limits and preserves concrete HTTPX exception subclasses so the client itself does not become the hidden bottleneck;
+- all test traffic uses a fake sleeping provider, never external market-data APIs.
+
+Prepared documents/tools:
+
+- `15-error-classification-and-retry-chain.md`
+- `16-two-worker-fake-provider-harness.md`
+- `tools/issue107_slow_data_app.py`
+- `tools/issue107_load_probe.py`
+- `tools/candidate_a_narrow_db_lease.patch` (unapplied documentation artifact)
+
+Prepared fallback candidates, still unselected:
+
+- **Candidate B:** bound factor live-macro fan-out only if macro bursts remain material after the primary bottleneck is addressed. No concurrency default is chosen.
+- **Candidate C:** data-side per-worker backfill admission control only if provider/in-flight work still saturates after DB-lifetime correction. Any queue/busy response must be bounded and caller-compatible; no 429/503 decision is made yet.
+
+Also documented changes we explicitly reject as first moves: blindly increasing DB pool size/workers, lowering panel concurrency without evidence, placing a semaphore after DB checkout, adding retries, weakening freshness, premature single-flight/Redis/distributed machinery, or introducing a telemetry stack just for #107.
+
+Prepared:
+
+- `17-candidate-fix-b-bound-macro-fanout.md`
+- `18-candidate-fix-c-data-admission-control.md`
+- `19-do-not-do-first.md`
+
 ### Current next actions
 
 - [x] continue static path verification without waiting for maintainer reply
@@ -216,15 +253,21 @@ The strongest reason to test it first is compatibility: if it solves the represe
 - [x] prepare deterministic 9-vs-10 pool-pressure diagnostic
 - [x] build current static per-worker capacity model
 - [x] map live-runner fresh poll behavior and lack of jitter
+- [x] map live-runner restart/resume warmup burst path
 - [x] map backpressure semantics across callers
+- [x] distinguish `DATA_SERVICE_UNREACHABLE` transport classes from literal connect refusal
+- [x] add non-DB control to deterministic diagnostics
+- [x] prepare production-like one/two-worker fake-provider harness
 - [x] prepare minimal Candidate A without committing production code
+- [x] prepare measured-only Candidate B/C fallback designs
+- [x] record anti-patterns/rejected first moves
 - [ ] establish runnable contributor environment
 - [ ] run pre-change `data` and `factor` tests
 - [ ] run deterministic slow-provider reproduction
 - [ ] capture one-worker baseline
 - [ ] capture production-like two-worker baseline
 - [ ] test live factor + macro fan-out
-- [ ] add runner-like traffic only after isolated paths are understood
+- [ ] add runner/resume-like traffic only after isolated paths are understood
 - [ ] record baseline before any production code change
 
 Maintainer feedback remains useful for scope/deployment context, but is no longer an idle-work gate.
