@@ -32,6 +32,7 @@ Faysk/inalpha
 | `06-implementation-log.md` | Chronological implementation/debugging log |
 | `07-before-after-results.md` | Baseline vs fixed benchmark comparison |
 | `08-pr-draft.md` | Draft upstream PR description/checklist |
+| `09-working-principles.md` | Contribution discipline: evidence, invariants, smallest justified change, regression mindset |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
 ## Working method
@@ -46,6 +47,14 @@ reproduce
 → run the exact same benchmark
 → compare before/after
 → prepare focused PR
+```
+
+Before every production change, ask:
+
+```text
+What evidence do we have?
+Which invariant could this break?
+Is there a smaller change that solves the same measured problem?
 ```
 
 Do not optimize away project invariants such as financial freshness, explicit failure semantics, authorization/owner boundaries, auditability, or service boundaries.
