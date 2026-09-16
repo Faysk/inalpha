@@ -12,7 +12,8 @@ Prove or falsify one narrow mechanism from static code inspection:
     -> DB connection remains occupied
     -> enough concurrent backfills can starve unrelated DB-backed endpoints
 
-The connector is fully fake/blocking. No external provider is contacted.
+The connector is fully fake/blocking. No external provider is contacted by the workload, and the
+constituent snapshot scheduler is explicitly disabled for this diagnostic lifespan.
 
 The diagnostic forces the data-service pool to ``max_size=2`` instead of relying on the ordinary
 repository default (currently 10). This makes the control/pressure boundary small, deterministic,
@@ -124,6 +125,10 @@ async def test_route_scoped_dbconn_starves_small_pool_while_provider_waits(
         )
 
     monkeypatch.setattr(main_mod, "init_pool", _init_small_pool)
+    # main.py creates the constituent snapshot scheduler inside lifespan from parse_indices(...).
+    # Force an empty list so a contributor's ordinary .env cannot trigger a startup catch-up call
+    # to a real A-share source while this otherwise fully fake diagnostic is running.
+    monkeypatch.setattr(main_mod, "parse_indices", lambda _raw: [])
 
     async with main_mod.app.router.lifespan_context(main_mod.app):
         transport = httpx.ASGITransport(app=main_mod.app)
