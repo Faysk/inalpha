@@ -101,8 +101,9 @@ async def test_concurrent_cold_macro_cache_does_not_coalesce_currently() -> None
 
     try:
         # Current expected behavior: every request sees the cold cache before any caller can put the
-        # result, so all six independently enter _fetch_df.
-        await asyncio.wait_for(state.all_entered.wait(), timeout=1.0)
+        # result, so all six independently enter _fetch_df. Give slow Windows/CI event loops enough
+        # scheduling slack; this timeout is only a deadlock guard, not a performance assertion.
+        await asyncio.wait_for(state.all_entered.wait(), timeout=5.0)
         assert state.fetch_count == callers
     finally:
         state.release.set()
