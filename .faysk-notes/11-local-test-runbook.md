@@ -147,11 +147,14 @@ Stay on `fix/data-service-saturation`.
 git fetch origin notes/issue-107
 ```
 
-### Pure factor macro-cache diagnostic
+### Pure factor diagnostics
 
 ```bash
 git show origin/notes/issue-107:.faysk-notes/tools/test_macro_cache_stampede_draft.py \
   > services/factor/tests/test_issue107_macro_stampede_local.py
+
+git show origin/notes/issue-107:.faysk-notes/tools/test_factor_live_cache_stampede_draft.py \
+  > services/factor/tests/test_issue107_live_cache_stampede_local.py
 ```
 
 ### Data DB-pool diagnostic
@@ -171,9 +174,11 @@ Do not `git add` them.
 
 ---
 
-## 6. Run the pure factor macro-cache diagnostic
+## 6. Run the pure factor cache diagnostics
 
-This test uses no data-service, DB, FRED API key or external network.
+These use no data-service, DB, FRED API key or external network.
+
+### H8 — macro-key cold stampede
 
 ```bash
 cd services/factor
@@ -192,7 +197,25 @@ sequential same-key macro requests
 → six underlying fake fetches
 ```
 
-If observed, this proves lack of same-key in-flight coalescing (**H8 structure**), not that H8 is materially responsible for #107.
+If observed, this proves lack of macro same-key in-flight coalescing (**H8 structure**), not that H8 is materially responsible for #107.
+
+### H11 — whole live-score cold stampede
+
+```bash
+cd services/factor
+uv run pytest -vv -s tests/test_issue107_live_cache_stampede_local.py
+cd ../..
+```
+
+This checks whether simultaneous identical live score requests all miss the module-level live cache before the first result is installed.
+
+Again:
+
+```text
+structural duplication ≠ production materiality
+```
+
+The service-level macro/mixed harnesses later decide whether H8/H11 matter enough to change production code.
 
 ---
 
@@ -256,6 +279,7 @@ If it does **not** match, preserve the result and investigate why. Do not edit t
 
 ```bash
 rm services/factor/tests/test_issue107_macro_stampede_local.py
+rm services/factor/tests/test_issue107_live_cache_stampede_local.py
 rm services/data/tests/test_issue107_pool_pressure_local.py
 git status --short
 ```
@@ -264,6 +288,7 @@ PowerShell:
 
 ```powershell
 Remove-Item services/factor/tests/test_issue107_macro_stampede_local.py
+Remove-Item services/factor/tests/test_issue107_live_cache_stampede_local.py
 Remove-Item services/data/tests/test_issue107_pool_pressure_local.py
 git status --short
 ```
@@ -272,9 +297,9 @@ The contribution branch should still contain zero #107 production changes at thi
 
 ---
 
-## 9. Service-level fake-provider baseline
+## 9. Materialize service-level contributor harnesses
 
-Next materialize:
+### Data-side wrapper and low-level probes
 
 ```bash
 git show origin/notes/issue-107:.faysk-notes/tools/issue107_slow_data_app.py \
@@ -287,21 +312,52 @@ git show origin/notes/issue-107:.faysk-notes/tools/issue107_timeout_persistence_
   > services/data/issue107_timeout_persistence_probe.py
 ```
 
-Follow `16-two-worker-fake-provider-harness.md` for the real Uvicorn/TCP one-worker and two-worker load runs.
+### Factor full-stack probe
 
-The wrapper now exposes:
+A convenient location is `services/factor/` because its environment already contains factor/shared dependencies:
+
+```bash
+git show origin/notes/issue-107:.faysk-notes/tools/issue107_factor_macro_probe.py \
+  > services/factor/issue107_factor_macro_probe.py
+```
+
+### Runner-like and mixed probes
+
+These import only shared auth/config plus HTTPX and can also be run from `services/factor/` after `uv sync`:
+
+```bash
+git show origin/notes/issue-107:.faysk-notes/tools/issue107_runner_poll_probe.py \
+  > services/factor/issue107_runner_poll_probe.py
+
+git show origin/notes/issue-107:.faysk-notes/tools/issue107_mixed_workload_probe.py \
+  > services/factor/issue107_mixed_workload_probe.py
+```
+
+All of the above are temporary contributor tooling. Keep them untracked.
+
+The data wrapper exposes:
 
 ```text
 X-Issue107-Worker-Pid response header
-GET /__issue107/state          # DB-free per-worker fake-provider counters
+GET /__issue107/state          # DB-free per-worker provider/http/thread/pool counters
 provider start/done/cancel/fail logs
 ```
+
+The state endpoint now includes direct Psycopg `get_stats()` values plus per-path HTTP in-flight counts, so peak pressure can be measured instead of guessed.
+
+---
+
+## 10. Service-level slow-provider baseline
+
+Follow `16-two-worker-fake-provider-harness.md` for the real Uvicorn/TCP one-worker and two-worker load runs.
+
+Start with one data worker and fake Binance only. The goal is to reproduce the DB/non-DB isolation signal with a real TCP server before adding factor/runner traffic.
 
 The load probe reports worker PID distribution for responses it receives, so the two-worker result does not assume a 50/50 split.
 
 ---
 
-## 10. DB-side transaction evidence
+## 11. DB-side transaction evidence
 
 For the one-worker fake-provider run, follow:
 
@@ -323,7 +379,7 @@ Do not change global autocommit or `_shared` to make the metric disappear.
 
 ---
 
-## 11. Client-timeout persistence diagnostic
+## 12. Client-timeout persistence diagnostic
 
 After the basic one-worker HTTP harness is understood, run the server with a provider delay longer than the client timeout and execute:
 
@@ -348,28 +404,133 @@ This tests H9 and determines whether retry amplification can include overlapping
 
 ---
 
-## 12. Full service-level baseline sequence
+## 13. Full-stack factor macro baseline
 
-Only after the deterministic tests are understood:
+Follow:
 
 ```text
-A. slow-provider/backfill pressure — 1 data worker
-B. same fake workload — 2 data workers
-C. DB-side pg_stat_activity snapshots
-D. client-timeout/cancellation behavior
-E. live factor + macro fan-out: cold single caller
-F. live factor + macro fan-out: cold concurrent callers
-G. same macro path warm cache
-H. panel control
-I. live-runner-like polling / resume burst
-J. mixed representative acceptance workload
+36-safe-full-stack-macro-harness.md
 ```
 
-Do not start with the mixed scenario. Isolate each resource first.
+For exact counts use:
+
+```text
+data workers   = 1
+factor workers = 1
+fake venues    = binance,fred
+fake bars/fetch = 1000
+```
+
+Run the factor macro probe with:
+
+```text
+cold single caller
+cold concurrent same-symbol callers
+cold concurrent unique-symbol callers
+immediate warm wave
+```
+
+Restart factor before a true cold run.
+
+Record actual factor→data request/provider-call deltas. Do not infer them from static “18 FRED series” arithmetic when the harness can count them directly.
 
 ---
 
-## 13. One-worker vs two-worker discipline
+## 14. Live-runner-like aligned vs staggered baseline
+
+Follow:
+
+```text
+38-runner-poll-harness.md
+```
+
+Use fake:
+
+```text
+binance,baostock,yfinance
+ISSUE107_FAKE_BARS_PER_FETCH=1000
+```
+
+Compare the **same** run count/provider delay with:
+
+```text
+--stagger-ms 0
+--stagger-ms 100
+```
+
+The probe samples peak provider/HTTP/DB-pool state while the wave is active.
+
+This tests H6 without modifying `live_runner.py`.
+
+---
+
+## 15. Mixed representative acceptance workload
+
+Only after the isolated mechanisms are understood, follow:
+
+```text
+39-mixed-workload-harness.md
+```
+
+Exact-count first pass:
+
+```text
+data workers   = 1
+factor workers = 1
+fake venues    = binance,fred,baostock,yfinance
+fake bars/fetch = 1000
+```
+
+Run at least:
+
+```text
+M1: cold factor same-symbol + runner stagger=0
+M2: cold factor unique-symbol + runner stagger=0
+M3: cold factor same-symbol + runner stagger=100ms
+```
+
+Restart factor before each comparison that is intended to be cold.
+
+The mixed probe also sends:
+
+```text
+/openapi.json  # DB-free control
+/health        # DB-backed control
+```
+
+while factor/runner work is in flight.
+
+This is the issue-level baseline we should rerun unchanged after Candidate A or any other selected fix.
+
+---
+
+## 16. Full baseline sequence
+
+Do not start with the mixed scenario. Use this order:
+
+```text
+A. existing data/factor tests
+B. pure H8/H11 factor diagnostics
+C. controlled pool=2 H1 diagnostic
+D. real-Uvicorn slow-provider pressure — 1 data worker
+E. pg_stat_activity during blocked provider wait
+F. H9 client-timeout/cancellation behavior
+G. same low-level fake workload — 2 data workers
+H. live factor + macro: cold single
+I. live factor + macro: cold concurrent same keys
+J. live factor + macro: cold concurrent unique price keys
+K. immediate warm factor control
+L. runner-like aligned polls
+M. runner-like stagger control
+N. mixed M1/M2/M3 issue-level baseline
+O. only then select the first production intervention
+```
+
+This order lets us explain *why* the mixed workload fails instead of only observing that it fails.
+
+---
+
+## 17. One-worker vs two-worker discipline
 
 The repository's production compose currently runs:
 
@@ -392,9 +553,17 @@ Use:
 
 Never describe a normal `asyncio.Semaphore`/lock/cache as service-global under the two-worker topology. It is process-local unless an external coordination mechanism is introduced.
 
+State/counter caveat:
+
+```text
+/__issue107/state
+```
+
+is process-local. Exact deltas and peak samples are only directly interpretable with one data worker. In two-worker mode combine client-visible behavior, response PID headers and per-PID logs.
+
 ---
 
-## 14. Evidence to save
+## 18. Evidence to save
 
 For every run record:
 
@@ -403,16 +572,21 @@ commit SHA
 worker count / worker PIDs
 test/scenario name
 request count / concurrency
+factor cache condition: cold/warm
+factor symbol mode: same/unique
+runner stagger
+fake provider mode/delay/bars-per-fetch
 duration
 p50 / p95 / p99
 HTTP status counts
 concrete HTTPX exception types
 DATA_SERVICE_UNREACHABLE count
 zero-row/no-progress refresh count
-DB pool symptoms
+DB pool requests/queued/wait/errors/available minimum
 pg_stat_activity state/xact evidence where applicable
 provider started/active/completed/cancelled counters
-provider errors
+provider per-venue counts
+HTTP in-flight peaks
 CPU / memory where practical
 notes on freshness/cutoff behavior
 ```
@@ -424,9 +598,31 @@ For the initial controlled-pool diagnostic, the important evidence is:
 2/2 pool slots retained: openapi available? yes/no; health blocked? yes/no
 ```
 
+For the mixed workload, preserve factor, runner, health and OpenAPI outcomes separately.
+
 ---
 
-## 15. Stop conditions
+## 19. Cleanup contributor harness files
+
+Before making or reviewing the actual contribution diff, remove every materialized contributor tool:
+
+```bash
+rm services/data/issue107_slow_data_app.py
+rm services/data/issue107_load_probe.py
+rm services/data/issue107_timeout_persistence_probe.py
+rm services/factor/issue107_factor_macro_probe.py
+rm services/factor/issue107_runner_poll_probe.py
+rm services/factor/issue107_mixed_workload_probe.py
+git status --short
+```
+
+PowerShell equivalents are fine.
+
+The final upstream PR should not accidentally contain the contributor harness unless the maintainer explicitly asks for a generally reusable benchmark tool.
+
+---
+
+## 20. Stop conditions
 
 Stop before implementing a production fix if:
 
@@ -438,7 +634,7 @@ Stop before implementing a production fix if:
 
 ---
 
-## 16. First implementation gate
+## 21. First implementation gate
 
 Only after baseline evidence exists, decide among:
 
@@ -449,5 +645,7 @@ C. address factor macro duplicate/fan-out behavior if materially measured
 D. address factor HTTP client reuse if materially measured
 E. another measured bottleneck
 ```
+
+Current project precedent already favors separating DB work from external HTTP in the live runner (see `37-existing-db-http-separation-precedent.md`), which strengthens Candidate A's project fit **if H1 is measured**. It does not replace the baseline requirement.
 
 Do not implement all candidates together. One measured cause, one minimal intervention, same benchmark before/after.
