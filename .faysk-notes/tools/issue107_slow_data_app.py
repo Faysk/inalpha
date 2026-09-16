@@ -29,6 +29,7 @@ The wrapper also adds contributor-only diagnostics:
 
 - ``X-Issue107-Worker-Pid`` on every response, to observe worker distribution;
 - ``GET /__issue107/state`` with aggregate and per-venue fake-provider counters;
+- per-path HTTP request totals/in-flight counts for factor→data fan-out measurement;
 - Psycopg pool ``get_stats()`` values flattened into the DB-free state response;
 - explicit start/done/cancel/fail logs around the async provider waiter;
 - separate sync-thread counters in ``thread`` mode, so cancellation of the asyncio waiter is not
@@ -63,6 +64,9 @@ _provider_completed = 0
 _provider_cancelled = 0
 _provider_failed = 0
 _provider_by_venue: dict[str, dict[str, int]] = {}
+
+_http_total: dict[str, int] = {}
+_http_inflight: dict[str, int] = {}
 
 _thread_lock = threading.Lock()
 _thread_active = 0
@@ -117,6 +121,20 @@ def _venue_state() -> dict[str, int]:
     for venue, counters in sorted(_provider_by_venue.items()):
         for key, value in counters.items():
             out[f"venue_{venue}_{key}"] = value
+    return out
+
+
+def _http_key(method: str, path: str) -> str:
+    path_key = path.strip("/").replace("/", "_").replace(".", "_") or "root"
+    return f"{method.lower()}_{path_key}"
+
+
+def _http_state() -> dict[str, int]:
+    out: dict[str, int] = {}
+    for key, value in sorted(_http_total.items()):
+        out[f"http_{key}_total"] = value
+    for key, value in sorted(_http_inflight.items()):
+        out[f"http_{key}_inflight"] = value
     return out
 
 
@@ -310,15 +328,21 @@ class SlowIssue107Connector:
 
 @app.middleware("http")
 async def _issue107_worker_header(request: Request, call_next: Any) -> Any:
-    """Expose the serving PID so two-worker request distribution is observable."""
-    response = await call_next(request)
-    response.headers["X-Issue107-Worker-Pid"] = str(os.getpid())
-    return response
+    """Expose serving PID and count per-path HTTP pressure for contributor diagnostics."""
+    key = _http_key(request.method, request.url.path)
+    _http_total[key] = _http_total.get(key, 0) + 1
+    _http_inflight[key] = _http_inflight.get(key, 0) + 1
+    try:
+        response = await call_next(request)
+        response.headers["X-Issue107-Worker-Pid"] = str(os.getpid())
+        return response
+    finally:
+        _http_inflight[key] = max(_http_inflight.get(key, 1) - 1, 0)
 
 
 @app.get("/__issue107/state", include_in_schema=False)
 async def _issue107_state() -> dict[str, int | str]:
-    """Per-worker provider/thread/pool state without acquiring a DB connection."""
+    """Per-worker provider/thread/http/pool state without acquiring a DB connection."""
     return {
         "pid": os.getpid(),
         "mode": os.environ.get("ISSUE107_PROVIDER_MODE", "async").strip().lower(),
@@ -331,6 +355,7 @@ async def _issue107_state() -> dict[str, int | str]:
         "failed": _provider_failed,
         **_venue_state(),
         **_thread_state(),
+        **_http_state(),
         **_pool_state(),
     }
 
