@@ -94,7 +94,7 @@ services/factor/issue107_sustained_acceptance_probe.py
 
 `issue107_factor_app.py` is mandatory for factor-driven capacity scenarios. It refuses startup when factor's configured `DATA_SERVICE_URL` does not match the expected contributor fake data-service target. `issue107_target_check.py` then verifies both ends without generating load. See `48-factor-target-fail-closed.md` and `49-runtime-safety-order.md`.
 
-`issue107_sustained_mixed_probe.py` is the base bounded soak helper and remains useful for H11-heavy same-key stress. `issue107_sustained_acceptance_probe.py` adds explicit cross-sectional `unique` factor keys, a `same` control and partial backlog reporting for the final sustained evidence stage. See `50-sustained-load-acceptance.md`.
+`issue107_sustained_mixed_probe.py` is the base bounded soak helper and remains useful for H11-heavy same-key stress. `issue107_sustained_acceptance_probe.py` adds explicit cross-sectional `unique` factor keys, a `same` control, missed-slot accounting, partial backlog reporting and one-worker provider/pool counter deltas for the sustained evidence stage. See `50-sustained-load-acceptance.md` and `52-provider-isolation-and-soak-hardening.md`.
 
 ### Data diagnostics
 
@@ -104,6 +104,16 @@ services/data/issue107_slow_data_app.py
 services/data/issue107_load_probe.py
 services/data/issue107_timeout_persistence_probe.py
 ```
+
+`issue107_slow_data_app.py` is intentionally stricter than normal development startup:
+
+```text
+CONSTITUENT_SNAPSHOT_INDICES forced empty before importing data main
+requested OHLCV venues → deterministic fake connector
+other registered OHLCV venues → fail-closed blocker
+```
+
+This prevents an ordinary contributor `.env` from starting the production constituent catch-up scheduler and prevents an unexpected `/backfill/bars` venue from silently reaching a real market-data connector during load generation.
 
 ### Local safety/evidence helpers
 
@@ -202,7 +212,30 @@ This does not replace the cache-state discipline in `41-benchmark-db-state-deter
 
 ---
 
-## 8. Cleanup
+## 8. Mandatory no-load check before factor/mixed/sustained load
+
+After starting the fake data wrapper and the factor fail-closed wrapper, run:
+
+```text
+services/factor/issue107_target_check.py
+```
+
+The checker now requires:
+
+```text
+all workload venues are fake
+no required venue is simultaneously reported blocked
+snapshot scheduler isolation is active
+factor DATA_SERVICE_URL equals the checked fake data URL
+factor wrapper expectation equals the same URL
+macro enabled when requested
+```
+
+Only `issue107_target_check=PASS` permits factor/mixed/sustained load generation.
+
+---
+
+## 9. Cleanup
 
 The preparation helpers only remove their known **untracked** destinations.
 
@@ -232,7 +265,7 @@ The evidence directory created by `issue107_capture_env.ps1` lives outside the r
 
 ---
 
-## 9. Why this helper exists
+## 10. Why this helper exists
 
 The runtime plan now uses several diagnostic files across data and factor services. Manually copying them one by one creates avoidable failure modes:
 
@@ -245,6 +278,8 @@ silently overwriting local work
 resetting the wrong database while trying to create a cold benchmark state
 starting factor against the ordinary data-service while believing the fake target is in use
 forgetting the no-load target verifier before a factor/mixed benchmark
+letting ordinary constituent scheduler config create unrelated real provider traffic
+letting an unexpected backfill venue escape to a real connector
 ```
 
 The helper removes those clerical risks while deliberately leaving the important engineering decisions manual and evidence-driven.
