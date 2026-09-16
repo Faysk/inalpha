@@ -145,5 +145,6 @@ foreach ($cmd in @("docker", "uv", "python", "node", "pnpm")) {
 }
 
 Write-Host ""
-Write-Host "Next: follow .faysk-notes/11-local-test-runbook.md from the notes branch."
-Write-Host "Cleanup later with: .\prepare_issue107_local.ps1 -Cleanup"
+Write-Host "Next: read the runbook without switching branches:"
+Write-Host "  git show origin/notes/issue-107:.faysk-notes/11-local-test-runbook.md"
+Write-Host "Cleanup later with: & `"$PSCommandPath`" -Cleanup"
