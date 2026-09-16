@@ -16,13 +16,12 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
 
 import pandas as pd
 
+from inalpha_factor import engine as engine_mod
 from inalpha_factor.config import get_factor_settings
 from inalpha_factor.engine import FactorEngine
-from inalpha_factor import engine as engine_mod
 
 from .conftest import make_ohlcv
 
@@ -94,7 +93,9 @@ async def test_concurrent_cold_same_score_key_does_not_coalesce_inflight_work() 
     ]
 
     try:
-        await asyncio.wait_for(probe.all_entered.wait(), timeout=2.0)
+        # Give slow contributor/CI machines enough room to schedule all six tasks. The property under
+        # test is the count before release, not a sub-second latency guarantee.
+        await asyncio.wait_for(probe.all_entered.wait(), timeout=5.0)
         assert probe.entered == count
         assert sum(engine.fetch_count for engine in engines) == count
     finally:
@@ -104,12 +105,13 @@ async def test_concurrent_cold_same_score_key_does_not_coalesce_inflight_work() 
     assert all(result["bars_used"] > 0 for result in results)
 
     # After the first wave has populated the shared cache, a new request-scoped engine with the same
-    # key should hit it and therefore never enter its probe.
+    # key should hit it and therefore never enter its probe. Give effectiveness scoring ample time;
+    # the diagnostic is about fetch_count, not wall-clock performance.
     warm_probe = _FetchProbe(expected=1)
     warm_engine = _BlockingEngine(warm_probe)
     warm_result = await asyncio.wait_for(
         warm_engine.score(**_kwargs()),  # type: ignore[arg-type]
-        timeout=2.0,
+        timeout=10.0,
     )
 
     assert warm_result["bars_used"] > 0
