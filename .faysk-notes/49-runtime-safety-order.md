@@ -31,7 +31,7 @@ DATA_SERVICE_URL=http://localhost:8001
 
 Likewise, correctly routed factor does not protect us if a required venue is still real or an ordinary contributor `.env` enables the startup constituent snapshot scheduler.
 
-Therefore the contributor harness now verifies routing and also hardens the data target itself.
+Therefore the contributor harness verifies routing and also hardens the data target itself.
 
 ---
 
@@ -129,15 +129,18 @@ with non-secret routing metadata only.
 
 ## 4. Step 3 — run the no-load target verifier
 
-Before generating factor-driven load, run from `services/factor`.
+The same checker now supports both factor-driven and data-only scenarios.
 
 ### Macro-only
+
+From `services/factor`:
 
 ```bash
 uv run python issue107_target_check.py \
   --data-url http://127.0.0.1:18001 \
   --factor-url http://127.0.0.1:18004 \
   --required-venues binance,fred \
+  --min-fake-bars-per-fetch 1000 \
   --require-macro
 ```
 
@@ -148,7 +151,29 @@ uv run python issue107_target_check.py \
   --data-url http://127.0.0.1:18001 \
   --factor-url http://127.0.0.1:18004 \
   --required-venues binance,fred,baostock,yfinance \
+  --min-fake-bars-per-fetch 1000 \
   --require-macro
+```
+
+### Runner-only
+
+Factor-service is not required:
+
+```bash
+uv run python issue107_target_check.py \
+  --data-url http://127.0.0.1:18001 \
+  --required-venues binance,baostock,yfinance \
+  --min-fake-bars-per-fetch 1000 \
+  --data-only
+```
+
+### Low-level backfill
+
+```bash
+uv run python issue107_target_check.py \
+  --data-url http://127.0.0.1:18001 \
+  --required-venues binance \
+  --data-only
 ```
 
 The checker performs only contributor diagnostic GETs. It does not call:
@@ -169,15 +194,22 @@ If it fails, do not run load.
 
 ---
 
-## 5. What the verifier now checks
+## 5. What the verifier checks
 
-It requires:
+Data-side checks always require:
 
 ```text
 data /__issue107/state exists
+at least one required workload venue is supplied
 all required workload venues are fake
 no required workload venue is reported blocked
 snapshot scheduler is forced disabled
+fake batch size meets --min-fake-bars-per-fetch when requested
+```
+
+Factor-driven mode additionally requires:
+
+```text
 factor /__issue107/config exists
 factor.data_service_url == checked data URL
 factor.expected_data_url == checked data URL
@@ -200,6 +232,8 @@ but local data startup/background config could still escape to a real provider
 
 before synthetic concurrency is generated.
 
+`--data-only` deliberately skips factor lookup only after all data-side isolation checks pass.
+
 ---
 
 ## 6. Sustained acceptance adds its own duplicate guard
@@ -212,6 +246,8 @@ or
 a required workload venue is blocked instead of fake
 ```
 
+Its base preflight also verifies factor routing and macro state.
+
 This is defense in depth, not a replacement for the explicit pre-run target checker.
 
 ---
@@ -222,7 +258,9 @@ This is defense in depth, not a replacement for the explicit pre-run target chec
 
 Runner-only scenarios do not require the factor wrapper, but they must use the hardened data wrapper and fake every requested runner venue.
 
-Do not run them against ordinary `inalpha_data.main:app` merely because the script itself checks venue names; the hardened wrapper now also prevents background scheduler leakage and blocks unexpected OHLCV venues.
+Before load, run the target checker in `--data-only` mode. This proves the current wrapper's scheduler-isolation marker and fake/blocked venue state without requiring factor-service.
+
+Do not run the probe against ordinary `inalpha_data.main:app` merely because the script itself checks venue names; the hardened wrapper also prevents background scheduler leakage and blocks unexpected OHLCV venues.
 
 ---
 
@@ -230,7 +268,13 @@ Do not run them against ordinary `inalpha_data.main:app` merely because the scri
 
 The generic low-level load probe calls data directly.
 
-It requires the contributor state endpoint and fake Binance. Use the same hardened data wrapper so non-fake OHLCV venues fail closed and startup background provider work is disabled.
+Before load, run the same checker with:
+
+```text
+--required-venues binance --data-only
+```
+
+The low-level probe still has its own embedded fake-Binance check; the explicit no-load verifier is the authoritative pre-run gate because it also checks scheduler isolation and blocked/fake consistency.
 
 Factor wrapper is irrelevant to these low-level scenarios.
 
@@ -257,7 +301,8 @@ For runner-only:
 ```text
 dedicated benchmark DB
 → hardened issue107_slow_data_app with all runner venues fake
-→ validate contributor state/fake venues
+→ issue107_target_check.py --data-only
+→ require PASS
 → run workload
 ```
 
@@ -266,7 +311,8 @@ For low-level data:
 ```text
 dedicated benchmark DB
 → hardened issue107_slow_data_app with binance fake
-→ validate contributor state + fake Binance
+→ issue107_target_check.py --required-venues binance --data-only
+→ require PASS
 → run workload
 ```
 
@@ -306,4 +352,4 @@ probe
 
 A benchmark result is not useful if we cannot first prove what system it exercised or if the measurement itself can escape to real providers.
 
-See `52-provider-isolation-and-soak-hardening.md` for the static review that introduced these additional guards.
+See `52-provider-isolation-and-soak-hardening.md` and `57-pre-runtime-tooling-audit.md` for the static reviews behind these guards.
