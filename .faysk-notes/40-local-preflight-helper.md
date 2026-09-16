@@ -78,30 +78,22 @@ $path = Join-Path $env:TEMP 'prepare_issue107_local.ps1'
 
 ## 4. Files materialized
 
-### Factor diagnostics / safety wrappers
+### Factor diagnostics / safety wrapper
 
 ```text
 services/factor/tests/test_issue107_macro_stampede_local.py
 services/factor/tests/test_issue107_live_cache_stampede_local.py
 services/factor/issue107_factor_app.py
+services/factor/issue107_target_check.py
 services/factor/issue107_factor_macro_probe.py
 services/factor/issue107_runner_poll_probe.py
 services/factor/issue107_mixed_workload_probe.py
-services/factor/issue107_target_check.py
+services/factor/issue107_sustained_mixed_probe.py
 ```
 
-`issue107_factor_app.py` is mandatory for factor-driven capacity scenarios. It refuses startup when factor's configured `DATA_SERVICE_URL` does not match the expected contributor fake data-service target.
+`issue107_factor_app.py` is mandatory for factor-driven capacity scenarios. It refuses startup when factor's configured `DATA_SERVICE_URL` does not match the expected contributor fake data-service target. `issue107_target_check.py` then verifies both ends without generating load. See `48-factor-target-fail-closed.md` and `49-runtime-safety-order.md`.
 
-Before macro/mixed load, run `issue107_target_check.py`. It performs only contributor diagnostic GETs and verifies the complete route:
-
-```text
-probe target
-→ factor contributor wrapper
-→ configured fake data-service URL
-→ all required venues fake
-```
-
-See `48-factor-target-fail-closed.md` and the authoritative sequence in `49-runtime-safety-order.md`.
+`issue107_sustained_mixed_probe.py` is currently a bounded same-key-heavy soak diagnostic. Before using it as final cross-sectional p95 evidence, follow the limitations and follow-up in `50-sustained-load-acceptance.md`.
 
 ### Data diagnostics
 
@@ -209,43 +201,7 @@ This does not replace the cache-state discipline in `41-benchmark-db-state-deter
 
 ---
 
-## 8. Factor/mixed no-load target verification
-
-After starting the fake data wrapper and factor contributor wrapper, but **before** generating capacity load:
-
-### Macro-only
-
-```bash
-cd services/factor
-uv run python issue107_target_check.py \
-  --data-url http://127.0.0.1:18001 \
-  --factor-url http://127.0.0.1:18004 \
-  --required-venues binance,fred \
-  --require-macro
-```
-
-### Mixed
-
-```bash
-cd services/factor
-uv run python issue107_target_check.py \
-  --data-url http://127.0.0.1:18001 \
-  --factor-url http://127.0.0.1:18004 \
-  --required-venues binance,fred,baostock,yfinance \
-  --require-macro
-```
-
-Required output:
-
-```text
-issue107_target_check=PASS
-```
-
-If it fails, do not run the workload. Fix local routing first.
-
----
-
-## 9. Cleanup
+## 8. Cleanup
 
 The preparation helpers only remove their known **untracked** destinations.
 
@@ -275,7 +231,7 @@ The evidence directory created by `issue107_capture_env.ps1` lives outside the r
 
 ---
 
-## 10. Why this helper exists
+## 9. Why this helper exists
 
 The runtime plan now uses several diagnostic files across data and factor services. Manually copying them one by one creates avoidable failure modes:
 
@@ -287,6 +243,7 @@ benchmarking a branch that drifted from upstream
 silently overwriting local work
 resetting the wrong database while trying to create a cold benchmark state
 starting factor against the ordinary data-service while believing the fake target is in use
+forgetting the no-load target verifier before a factor/mixed benchmark
 ```
 
 The helper removes those clerical risks while deliberately leaving the important engineering decisions manual and evidence-driven.
