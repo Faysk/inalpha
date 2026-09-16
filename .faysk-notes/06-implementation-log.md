@@ -113,7 +113,7 @@ Additional confirmed facts:
 
 - `data-service` calls `init_pool()` without overriding the shared defaults: `max_size=10`, checkout timeout 30s per worker.
 - `GET /health` itself requires `DBConn` before it can run `SELECT 1`.
-- production compose runs `data` with `WORKERS=2` and probes `/health` with a 2-second Docker healthcheck timeout.
+- production compose runs `data` with `WORKERS=2` and probes `/health` with a short Docker healthcheck timeout.
 - factor `DataClient` uses a 30-second HTTP timeout for `GET /bars`; its GET path retries `httpx.RequestError` up to 3 times.
 - therefore pool wait and caller timeout are aligned closely enough to form a plausible retry-amplification path to `DATA_SERVICE_UNREACHABLE`.
 - yfinance's per-process `_FETCH_LOCK` can queue requests behind provider serialization while those requests still own route-scoped DB connections.
@@ -144,6 +144,67 @@ It uses a fake blocking connector and no external network. The control/pressure 
 
 This is intended to be copied temporarily into `services/data/tests/` and run against the unmodified baseline. It is not upstream PR material as-is.
 
+### Static capacity model / caller contract review
+
+Continued without touching the contribution branch.
+
+New static conclusions:
+
+1. **Cold live macro traffic is numerically close to the DB ceiling.**
+   - A live macro cache miss can fan out to roughly 18 FRED series.
+   - Production data has 2 workers × max 10 DB connections per worker.
+   - With perfect balancing, 18 fresh series is roughly 9 requests per worker, leaving only ~1 DB slot per worker while provider I/O is in flight.
+   - This is a capacity model, not proof of real scheduler/accept distribution.
+
+2. **A modest overlap can exceed the per-worker pool even under ideal balance.**
+   - Example model: 18 macro + 4 live polls = 22 backfill-shaped requests, ~11/worker if perfectly balanced.
+   - Uneven worker distribution can saturate one worker earlier.
+
+3. **Macro is bursty in current `main`.**
+   - live macro cache TTL is one hour, so the 18-series path is strongest on cache miss/restart/expiry rather than continuously by itself.
+   - This reinforces the need for mixed-load reproduction instead of treating the original June traffic description as unchanged.
+
+4. **Live runner can still generate synchronized fresh traffic.**
+   - each running strategy has its own asyncio task;
+   - default per-account maximum is 10 runs;
+   - each poll uses `get_bars(fresh=True)` = backfill + read;
+   - the main poll loop has no jitter, so same-timeframe runs can align.
+
+5. **`/health` can fail before its local DB-error fallback executes.**
+   - `DBConn` dependency resolution happens before the handler's `try` around `SELECT 1`;
+   - pool checkout timeout can therefore surface as generic `500 INTERNAL_ERROR` rather than `db="error"`.
+   - health remains a useful pool-starvation canary but is not pure liveness.
+
+6. **Psycopg transaction lifetime makes current coupling slightly worse.**
+   - default autocommit is false;
+   - `latest_bar_ts()` SELECT starts a transaction;
+   - the first external provider wait can occur while that transaction and pool lease are still open.
+   - this is a verified behavior/property, not yet a measured production impact claim.
+
+7. **Backpressure cannot be designed server-only.**
+   - factor ignores a plain non-2xx response from its best-effort POST unless an exception is raised;
+   - paper explicitly parses non-2xx but `get_bars(fresh=True)` deliberately degrades to cache;
+   - live runner inherits paper semantics;
+   - orchestration fails explicitly on non-2xx.
+   - choosing 429/503 therefore changes caller behavior differently across components.
+
+Prepared:
+
+- `12-static-capacity-model.md`
+- `13-caller-backpressure-matrix.md`
+- `14-candidate-fix-a-narrow-db-lease.md`
+
+Candidate A is intentionally **not selected yet**. It is a ready design for the smallest likely fix if the 9-vs-10 diagnostic confirms H1:
+
+```text
+short DB checkout for latest_bar_ts
+→ release DB
+→ external provider I/O
+→ short DB checkout for persistence
+```
+
+The strongest reason to test it first is compatibility: if it solves the representative workload, we can improve capacity **without adding a new HTTP busy contract, guessed concurrency limit, factor change, live-runner change, or `_shared` change**.
+
 ### Current next actions
 
 - [x] continue static path verification without waiting for maintainer reply
@@ -153,6 +214,10 @@ This is intended to be copied temporarily into `services/data/tests/` and run ag
 - [x] confirm `/health` shares the same DB pool dependency
 - [x] map 30s DB-pool checkout vs 30s factor HTTP timeout interaction
 - [x] prepare deterministic 9-vs-10 pool-pressure diagnostic
+- [x] build current static per-worker capacity model
+- [x] map live-runner fresh poll behavior and lack of jitter
+- [x] map backpressure semantics across callers
+- [x] prepare minimal Candidate A without committing production code
 - [ ] establish runnable contributor environment
 - [ ] run pre-change `data` and `factor` tests
 - [ ] run deterministic slow-provider reproduction
