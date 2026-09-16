@@ -14,9 +14,12 @@ Prove or falsify one narrow mechanism from static code inspection:
 
 The connector is fully fake/blocking. No external provider is contacted.
 
-The pressure case also probes ``/openapi.json`` as a non-DB control. If OpenAPI stays responsive
-while ``/health`` blocks, that separates DB-pool starvation from generic event-loop/HTTP-server
-starvation.
+The diagnostic forces the data-service pool to ``max_size=2`` instead of relying on the ordinary
+repository default (currently 10). This makes the control/pressure boundary small, deterministic,
+and resistant to future pool-size tuning.
+
+It also probes ``/openapi.json`` as a non-DB control. If OpenAPI stays responsive while ``/health``
+blocks, that separates DB-pool starvation from generic event-loop/HTTP-server starvation.
 """
 
 from __future__ import annotations
@@ -81,7 +84,7 @@ async def _start_blocked_backfills(
                     headers=auth_headers,
                     json={
                         "venue": "binance",
-                        "symbol": f"POOL-{idx}-{uuid4().hex[:8]}",
+                        "symbol": f"POOL-{count}-{idx}-{uuid4().hex[:8]}",
                         "timeframe": "1h",
                         "from_ts": start.isoformat(),
                         "to_ts": end.isoformat(),
@@ -94,81 +97,87 @@ async def _start_blocked_backfills(
     return tasks
 
 
-async def test_nine_blocked_backfills_leave_capacity_for_health(
-    app_with_overrides: Any,
+async def test_route_scoped_dbconn_starves_small_pool_while_provider_waits(
+    monkeypatch: pytest.MonkeyPatch,
     auth_headers: dict[str, str],
 ) -> None:
-    """Control: with 9/10 pool slots occupied, /health should still get one connection."""
+    """Baseline diagnostic with an explicit two-connection DB pool.
+
+    Control:
+        one blocked provider call -> one of two DB leases retained -> /health still succeeds.
+
+    Pressure:
+        two blocked provider calls -> both DB leases retained -> /openapi stays responsive while
+        /health waits until provider release.
+    """
+    from inalpha_shared.db import init_pool as shared_init_pool
+
+    from inalpha_data import main as main_mod
     from inalpha_data.connectors import _base as connectors_base
 
-    connector = _BlockingConnector(expected_in_flight=9)
-    connectors_base._REGISTRY["binance"] = connector
-
-    transport = httpx.ASGITransport(app=app_with_overrides)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-        timeout=5.0,
-    ) as client:
-        tasks = await _start_blocked_backfills(
-            client=client,
-            connector=connector,
-            auth_headers=auth_headers,
-            count=9,
+    async def _init_small_pool(database_url: str) -> Any:
+        return await shared_init_pool(
+            database_url,
+            min_size=1,
+            max_size=2,
+            timeout=2.0,
         )
 
-        try:
-            health = await asyncio.wait_for(client.get("/health"), timeout=1.0)
+    monkeypatch.setattr(main_mod, "init_pool", _init_small_pool)
+
+    async with main_mod.app.router.lifespan_context(main_mod.app):
+        transport = httpx.ASGITransport(app=main_mod.app)
+        async with httpx.AsyncClient(
+            transport=transport,
+            base_url="http://testserver",
+            timeout=5.0,
+        ) as client:
+            # Control: 1/2 pool slots held by the slow route; health still gets the other one.
+            one = _BlockingConnector(expected_in_flight=1)
+            connectors_base._REGISTRY["binance"] = one
+            one_tasks = await _start_blocked_backfills(
+                client=client,
+                connector=one,
+                auth_headers=auth_headers,
+                count=1,
+            )
+            try:
+                health = await asyncio.wait_for(client.get("/health"), timeout=1.0)
+                assert health.status_code == 200
+                assert health.json()["db"] == "ok"
+            finally:
+                one.release.set()
+                one_responses = await asyncio.gather(*one_tasks)
+            assert all(r.status_code == 200 for r in one_responses)
+
+            # Pressure: 2/2 leases are now retained while both requests await fake provider I/O.
+            two = _BlockingConnector(expected_in_flight=2)
+            connectors_base._REGISTRY["binance"] = two
+            two_tasks = await _start_blocked_backfills(
+                client=client,
+                connector=two,
+                auth_headers=auth_headers,
+                count=2,
+            )
+
+            openapi = await asyncio.wait_for(client.get("/openapi.json"), timeout=0.5)
+            assert openapi.status_code == 200
+
+            health_task = asyncio.create_task(client.get("/health"))
+            try:
+                # Keep the request alive after our short observation timeout. If it cannot enter
+                # while the non-DB control can, the current route ordering is consistent with DB
+                # pool starvation rather than generic ASGI/event-loop starvation.
+                with pytest.raises(TimeoutError):
+                    await asyncio.wait_for(asyncio.shield(health_task), timeout=0.5)
+            finally:
+                two.release.set()
+
+            two_responses = await asyncio.gather(*two_tasks)
+            health = await asyncio.wait_for(health_task, timeout=2.0)
+
+            assert all(r.status_code == 200 for r in two_responses)
             assert health.status_code == 200
             assert health.json()["db"] == "ok"
-        finally:
-            connector.release.set()
-            responses = await asyncio.gather(*tasks)
 
-    assert all(r.status_code == 200 for r in responses)
-
-
-async def test_ten_blocked_backfills_starve_db_but_not_event_loop(
-    app_with_overrides: Any,
-    auth_headers: dict[str, str],
-) -> None:
-    """Diagnostic: full DB pool blocks /health while a non-DB endpoint stays responsive."""
-    from inalpha_data.connectors import _base as connectors_base
-
-    connector = _BlockingConnector(expected_in_flight=10)
-    connectors_base._REGISTRY["binance"] = connector
-
-    transport = httpx.ASGITransport(app=app_with_overrides)
-    async with httpx.AsyncClient(
-        transport=transport,
-        base_url="http://testserver",
-        timeout=5.0,
-    ) as client:
-        tasks = await _start_blocked_backfills(
-            client=client,
-            connector=connector,
-            auth_headers=auth_headers,
-            count=10,
-        )
-
-        # Non-DB control: the event loop/ASGI stack should still answer quickly while all
-        # database connections are retained by the blocked backfill requests.
-        openapi = await asyncio.wait_for(client.get("/openapi.json"), timeout=0.5)
-        assert openapi.status_code == 200
-
-        health_task = asyncio.create_task(client.get("/health"))
-        try:
-            # Shield keeps the request alive after the diagnostic timeout. If this times out
-            # while OpenAPI remains responsive, the behavior is consistent with DB-pool
-            # starvation rather than generic event-loop starvation.
-            with pytest.raises(TimeoutError):
-                await asyncio.wait_for(asyncio.shield(health_task), timeout=0.5)
-        finally:
-            connector.release.set()
-
-        responses = await asyncio.gather(*tasks)
-        health = await asyncio.wait_for(health_task, timeout=2.0)
-
-    assert all(r.status_code == 200 for r in responses)
-    assert health.status_code == 200
-    assert health.json()["db"] == "ok"
+    main_mod.app.dependency_overrides.clear()
