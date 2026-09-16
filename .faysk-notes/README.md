@@ -38,7 +38,11 @@ Faysk/inalpha
 | `12-static-capacity-model.md` | Per-worker DB capacity model, macro/live burst arithmetic, timeout cascade, health canary predictions |
 | `13-caller-backpressure-matrix.md` | Factor/paper/research/dashboard/orchestration behavior if backfill is busy or fails |
 | `14-candidate-fix-a-narrow-db-lease.md` | Prepared minimal candidate that releases DB capacity during external provider I/O; not selected until measured |
-| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic diagnostic for DB-pool starvation while provider I/O is blocked |
+| `15-error-classification-and-retry-chain.md` | Why `DATA_SERVICE_UNREACHABLE` can mean read timeout, pool-induced slowness, or real connectivity; retry amplification model |
+| `16-two-worker-fake-provider-harness.md` | Production-like 1/2-worker Uvicorn harness with a deterministic fake slow provider and no external API stress |
+| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process diagnostic for DB-pool starvation while provider I/O is blocked |
+| `tools/issue107_slow_data_app.py` | Temporary data-service wrapper that installs a fake slow `binance` connector after normal startup |
+| `tools/issue107_load_probe.py` | Local concurrent backfill + health probe preserving concrete HTTPX error types and latency percentiles |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
 ## Working method
