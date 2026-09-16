@@ -79,13 +79,48 @@ Updated:
 - `04-baseline-results.md`
 - `05-solution-design.md`
 
-### Pending
+### Active investigation — do not wait for maintainer reply
 
-- [ ] maintainer confirms proposed technical direction
-- [ ] establish runnable environment
-- [ ] run pre-change tests
-- [ ] build deterministic reproduction
-- [ ] capture baseline
+Decision: maintainer feedback is **not a blocker** for non-invasive investigation, environment preparation, tests, or baseline work. We continue now, while keeping production behavior unchanged until evidence exists.
+
+Static verification completed in this pass:
+
+- Confirmed `DBConn` is implemented by `_db_dep()` wrapping `get_conn()`, which holds `_pool.connection()` across the dependency scope. This confirms that the current `/backfill/bars` route retains a checked-out DB connection across provider I/O.
+- Confirmed `get_engine()` creates a new `FactorEngine` per request.
+- Confirmed `FactorEngine._fetch_df()` creates a new `DataClient`, and therefore a new `httpx.AsyncClient`, per fetch.
+- Confirmed macro fan-out can therefore create multiple short-lived HTTP clients concurrently.
+- Confirmed factor `_best_effort_backfill()` does not inspect non-2xx backfill responses; a future `429`/`503` would not automatically enter its exception path.
+- Confirmed orchestration's shared TypeScript `HttpClient` does the opposite: every non-2xx becomes `HttpClientError` with upstream code/status/details preserved.
+- Paper/research/dashboard remain intentionally different degradation paths, so backpressure correctness must be reviewed per caller.
+
+Important wording discipline:
+
+```text
+confirmed lifetime behavior ≠ measured root cause
+```
+
+The DB-lifetime mechanism is now statically proven. Its contribution to #107 still requires runtime reproduction.
+
+Created:
+
+- `10-active-investigation.md`
+
+### Current next actions
+
+- [x] continue static path verification without waiting for maintainer reply
+- [x] confirm exact `DBConn` dependency lifetime
+- [x] confirm factor HTTP client lifetime
+- [x] confirm factor vs orchestration non-2xx semantics
+- [ ] establish runnable contributor environment
+- [ ] run pre-change `data` and `factor` tests
+- [ ] build deterministic slow-provider reproduction
+- [ ] capture one-worker baseline
+- [ ] capture production-like two-worker baseline
+- [ ] test live factor + macro fan-out
+- [ ] add runner-like traffic only after isolated paths are understood
+- [ ] record baseline before any production code change
+
+Maintainer feedback remains useful for scope/deployment context, but is no longer an idle-work gate.
 
 ---
 
