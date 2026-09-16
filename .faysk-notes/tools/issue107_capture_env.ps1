@@ -7,20 +7,20 @@ param(
 $ErrorActionPreference = "Stop"
 Set-StrictMode -Version Latest
 
-function Invoke-Git([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args) {
-    $output = & git @Args 2>&1
+function Invoke-Git([Parameter(ValueFromRemainingArguments = $true)][string[]]$GitArgs) {
+    $output = & git @GitArgs 2>&1
     if ($LASTEXITCODE -ne 0) {
-        throw "git $($Args -join ' ') failed:`n$output"
+        throw "git $($GitArgs -join ' ') failed:`n$output"
     }
     return $output
 }
 
-function Command-Version([string]$Name, [string[]]$Args = @("--version")) {
+function Command-Version([string]$Name, [string[]]$VersionArgs = @("--version")) {
     if (-not (Get-Command $Name -ErrorAction SilentlyContinue)) {
         return "$Name=NOT_FOUND"
     }
     try {
-        $out = & $Name @Args 2>&1
+        $out = & $Name @VersionArgs 2>&1
         return "$Name=$(($out | Out-String).Trim())"
     }
     catch {
@@ -159,7 +159,7 @@ $notesPath = Join-Path $sessionDir "notes.md"
 $notes = @"
 # Issue #107 evidence notes
 
-Session: `$sessionName`
+Session: $sessionName
 
 Do not paste secrets or full environment dumps here.
 
