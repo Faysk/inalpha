@@ -73,7 +73,8 @@ Faysk/inalpha
 | `47-benchmark-reset-safety.md` | Fail-closed dedicated-DB reset workflow so cold-state benchmarks cannot silently truncate the ordinary development database |
 | `48-factor-target-fail-closed.md` | Fail-closed factor wrapper so factor/mixed load cannot silently route to the ordinary data-service instead of the fake benchmark target |
 | `49-runtime-safety-order.md` | Authoritative pre-load safety sequence: fake data wrapper → fail-closed factor wrapper → no-load target checker → workload |
-| `50-sustained-load-acceptance.md` | Separates short mechanism probes from sustained p95 evidence, defines bounded soak acceptance and records the current v1 same-key limitation before cross-sectional claims |
+| `50-sustained-load-acceptance.md` | Separates short mechanism probes from sustained p95 evidence and defines O1 cross-sectional, O2 same-key stress and optional O3 stagger acceptance scenarios |
+| `51-sustained-results-template.md` | Empty three-run sustained evidence template with separate latency/error/backlog/provider signals and before→after wording guard |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
@@ -86,7 +87,8 @@ Faysk/inalpha
 | `tools/issue107_factor_macro_probe.py` | Safe full-stack cold/warm factor macro probe with factor→data HTTP, fake-provider and pool-counter deltas |
 | `tools/issue107_runner_poll_probe.py` | Live-runner-like fresh poll probe with aligned/staggered scheduling and peak in-flight pool/provider sampling |
 | `tools/issue107_mixed_workload_probe.py` | Combined factor macro + runner fresh polling + DB/non-DB control workload for issue-level reproduction |
-| `tools/issue107_sustained_mixed_probe.py` | Bounded sustained mixed-load soak probe for percentile/stability evidence; current v1 repeats one factor key per cycle and is stress evidence until unique-symbol mode is added |
+| `tools/issue107_sustained_mixed_probe.py` | Base bounded soak helper; same-key-heavy by design and retained as H11 stress machinery |
+| `tools/issue107_sustained_acceptance_probe.py` | Acceptance-oriented bounded soak using unique cross-sectional factor symbols by default, explicit same-key control and partial backlog evidence on settle timeout |
 | `tools/prepare_issue107_local.ps1` | Windows PowerShell preflight/materialization helper; refuses dirty/drifted/tracked destinations and never applies production changes |
 | `tools/prepare_issue107_local.sh` | Bash/WSL/Linux equivalent of the safe preflight/materialization helper |
 | `tools/issue107_capture_env.ps1` | Creates a local baseline/candidate evidence directory and records non-secret revision/tool/host metadata; never uploads results |
