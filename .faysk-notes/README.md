@@ -57,6 +57,7 @@ Faysk/inalpha
 | `31-candidate-a-project-fit-and-contract-review.md` | Candidate A style precedent, testability, checkout-count trade-off and error-precedence review |
 | `32-provider-concurrency-matrix.md` | Per-venue concurrency/timeout controls and moved-bottleneck risks after DB decoupling |
 | `33-h11-factor-live-cache-stampede.md` | Whole live-score cache same-key stampede, shared LRU eviction nuance and service-level materiality gate |
+| `34-original-issue-todo-disposition.md` | Maps every original #107 proposed fix to current `main`, showing what is already mitigated, still absent, or evidence-gated |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
