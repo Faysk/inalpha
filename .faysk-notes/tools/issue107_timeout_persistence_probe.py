@@ -19,7 +19,9 @@ Then:
     uv run python issue107_timeout_persistence_probe.py \
       --base-url http://127.0.0.1:18001 --attempts 4 --request-timeout 0.5 --settle-wait 6
 
-No external market-data provider is contacted.
+No external market-data provider is contacted. Before creating timed-out backfill load, the probe
+requires the current contributor wrapper state, fake Binance, scheduler isolation, and no
+fake/blocked overlap for Binance.
 """
 
 from __future__ import annotations
@@ -62,6 +64,31 @@ async def _state(base_url: str) -> dict[str, Any]:
         if not isinstance(body, dict):
             raise RuntimeError(f"unexpected state response: {body!r}")
         return body
+
+
+def _assert_safe_target(state: dict[str, Any]) -> None:
+    fake = {
+        item.strip().lower()
+        for item in str(state.get("fake_venues", "")).split(",")
+        if item.strip()
+    }
+    blocked = {
+        item.strip().lower()
+        for item in str(state.get("blocked_venues", "")).split(",")
+        if item.strip()
+    }
+    if "binance" not in fake:
+        raise RuntimeError(
+            "unsafe timeout probe target: binance is not faked; "
+            f"fake_venues={sorted(fake)}"
+        )
+    if "binance" in blocked:
+        raise RuntimeError("unsafe timeout probe target: binance is reported both fake and blocked")
+    if state.get("snapshot_scheduler_forced_disabled") != 1:
+        raise RuntimeError(
+            "unsafe timeout probe target: current contributor wrapper did not prove startup "
+            "snapshot scheduler isolation"
+        )
 
 
 async def _timed_backfill(
@@ -124,7 +151,12 @@ def _print_state_delta(label: str, before: dict[str, Any], after: dict[str, Any]
 
 async def _run(args: argparse.Namespace) -> None:
     before = await _state(args.base_url)
-    print(f"state_before={before}")
+    _assert_safe_target(before)
+    print(
+        "issue107_timeout_preflight=PASS "
+        f"pid={before.get('pid')} mode={before.get('mode')} "
+        f"fake_venues={before.get('fake_venues')}"
+    )
 
     token = _token()
     results = await asyncio.gather(
