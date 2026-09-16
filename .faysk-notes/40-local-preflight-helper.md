@@ -1,8 +1,8 @@
 # Issue #107 — Local Preflight / Diagnostic Materialization Helper
 
-**Purpose:** reduce setup mistakes when the runtime phase begins while keeping every contributor diagnostic out of the actual contribution diff.
+**Purpose:** reduce setup mistakes when the runtime phase begins while keeping every contributor diagnostic/helper out of the actual contribution diff.
 
-The helpers do **not** install dependencies, start Docker, run benchmarks, edit production code, or apply Candidate A. They only verify the checkout and materialize known contributor-only diagnostics as untracked files.
+The helpers do **not** install dependencies, start Docker, run benchmarks, edit production code, or apply Candidate A. They only verify the checkout and materialize known contributor-only diagnostics plus local safety/evidence helpers as untracked files.
 
 ---
 
@@ -97,7 +97,17 @@ services/data/issue107_load_probe.py
 services/data/issue107_timeout_persistence_probe.py
 ```
 
-They are intentionally **untracked**.
+### Local safety/evidence helpers
+
+```text
+scripts/issue107_capture_env.ps1
+scripts/issue107_benchmark_db.ps1
+scripts/issue107_benchmark_db.sh
+```
+
+All of them are intentionally **untracked**.
+
+`issue107_benchmark_db.*` has the benchmark DB name hard-coded to `inalpha_issue107`. It can verify the target or truncate only `public.bars` in that dedicated database; it does not accept an arbitrary database name. This is deliberate protection against accidentally clearing the contributor's ordinary `inalpha` database.
 
 The post-fix Candidate A regression and the Candidate A patch are deliberately **not** materialized at baseline-preparation time. They belong only after H1 selects Candidate A.
 
@@ -140,9 +150,53 @@ Actual dependency setup remains the repository's documented `CONTRIBUTING.md` fl
 
 ---
 
-## 7. Cleanup
+## 7. Benchmark DB helper
 
-The helpers only remove their known **untracked** diagnostic destinations.
+After infra is running and migrations have been applied, verify the dedicated target before a session:
+
+### PowerShell
+
+```powershell
+.\scripts\issue107_benchmark_db.ps1 verify
+```
+
+### Bash / WSL
+
+```bash
+bash scripts/issue107_benchmark_db.sh verify
+```
+
+For a deliberately DB-cold scenario, after the previous workload has fully stopped:
+
+```powershell
+.\scripts\issue107_benchmark_db.ps1 reset-bars
+```
+
+or:
+
+```bash
+bash scripts/issue107_benchmark_db.sh reset-bars
+```
+
+The helper:
+
+```text
+requires the infra postgres container to be running
+connects only to inalpha_issue107
+verifies current_database()
+verifies public.bars exists
+shows the row count before reset
+TRUNCATEs only public.bars when reset-bars is explicitly requested
+verifies row count = 0 afterward
+```
+
+This does not replace the cache-state discipline in `41-benchmark-db-state-determinism.md`; it makes the destructive part harder to perform against the wrong DB.
+
+---
+
+## 8. Cleanup
+
+The preparation helpers only remove their known **untracked** destinations.
 
 ### Bash
 
@@ -166,9 +220,11 @@ git status --short
 
 should return to the contributor's ordinary checkout state.
 
+The evidence directory created by `issue107_capture_env.ps1` lives outside the repository and is intentionally **not** deleted by this cleanup helper.
+
 ---
 
-## 8. Why this helper exists
+## 9. Why this helper exists
 
 The runtime plan now uses several diagnostic files across data and factor services. Manually copying them one by one creates avoidable failure modes:
 
@@ -178,6 +234,7 @@ putting a tool in the wrong service environment
 accidentally adding diagnostics to the production commit
 benchmarking a branch that drifted from upstream
 silently overwriting local work
+resetting the wrong database while trying to create a cold benchmark state
 ```
 
 The helper removes those clerical risks while deliberately leaving the important engineering decisions manual and evidence-driven.
