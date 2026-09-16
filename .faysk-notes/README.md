@@ -61,6 +61,8 @@ Faysk/inalpha
 | `35-psycopg-pool-stats-diagnostic.md` | Direct `AsyncConnectionPool.get_stats()` measurement plan for pool availability, queueing, wait time and errors |
 | `36-safe-full-stack-macro-harness.md` | Real factor→data local-HTTP macro benchmark with fake Binance/FRED providers and cold/warm/same/unique-key controls |
 | `37-existing-db-http-separation-precedent.md` | Existing live-runner M-1 rule and implementation: short DB read → external HTTP → short DB write, directly matching Candidate A's intended resource ordering |
+| `38-runner-poll-harness.md` | Live-runner-like fresh polling harness, aligned-vs-stagger control and in-flight DB/provider sampling |
+| `39-mixed-workload-harness.md` | Combined cold factor/macro + runner polling + health/openapi workload used for the issue-level before/after decision gate |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
@@ -69,6 +71,8 @@ Faysk/inalpha
 | `tools/issue107_load_probe.py` | Concurrent backfill + DB/non-DB probe preserving HTTPX error types, percentiles, worker PID distribution and pool-state samples |
 | `tools/issue107_timeout_persistence_probe.py` | Real-TCP timeout experiment distinguishing async request cancellation from underlying sync-thread persistence |
 | `tools/issue107_factor_macro_probe.py` | Safe full-stack cold/warm factor macro probe with factor→data HTTP, fake-provider and pool-counter deltas |
+| `tools/issue107_runner_poll_probe.py` | Live-runner-like fresh poll probe with aligned/staggered scheduling and peak in-flight pool/provider sampling |
+| `tools/issue107_mixed_workload_probe.py` | Combined factor macro + runner fresh polling + DB/non-DB control workload for issue-level reproduction |
 | `tools/candidate_a_narrow_db_lease.patch` | Unapplied patch draft for Candidate A; documentation artifact only until baseline evidence selects it |
 | `archive/technical-review-2026-09-07.md` | Original full technical review that led to selecting #107 as the first contribution |
 
