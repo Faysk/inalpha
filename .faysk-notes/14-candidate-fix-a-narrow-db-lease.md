@@ -24,7 +24,7 @@ DB checkout
 → DB release
 ```
 
-Candidate A changes only resource lifetime:
+Candidate A changes resource lifetime:
 
 ```text
 validate / route provider
@@ -39,7 +39,7 @@ validate / route provider
 → response
 ```
 
-The business behavior and HTTP contract should remain unchanged.
+The intended successful business behavior remains the same. Failure precedence under DB unavailability is reviewed separately in `23-candidate-a-deep-review.md` and must not be described as literally byte-for-byte identical in every failure race.
 
 ---
 
@@ -47,7 +47,7 @@ The business behavior and HTTP contract should remain unchanged.
 
 If H1 is confirmed, this solution has several desirable properties:
 
-- no new public error code;
+- no new public busy/error code;
 - no new queue semantics;
 - no guessed concurrency default;
 - no factor/paper/research caller contract change;
@@ -59,7 +59,7 @@ If H1 is confirmed, this solution has several desirable properties:
 - preserves UPSERT/idempotency;
 - lets ordinary read endpoints use DB capacity while external providers are slow.
 
-It attacks a specific coupling rather than imposing a global concurrency policy.
+It attacks a specific coupling rather than imposing a broad concurrency policy.
 
 ---
 
@@ -151,7 +151,13 @@ async with get_conn() as conn:
     )
 ```
 
-Since `insert_bars()` already commits the batch, the current persisted-batch boundary is retained.
+Since `insert_bars()` already commits every batch, the current durable batch boundary is retained.
+
+If selected, add a short **why** comment near the explicit connection scopes so a future style-only refactor does not restore request-long `DBConn` ownership:
+
+```text
+Keep provider I/O outside the DB lease; request-scoped DBConn would retain scarce pool capacity while waiting on external services.
+```
 
 ---
 
@@ -178,6 +184,12 @@ ON CONFLICT ... DO UPDATE
 
 Backfill remains idempotent at the DB row level.
 
+### Existing transaction granularity
+
+Current code is already **not** one atomic request-wide transaction: `insert_bars()` commits each batch.
+
+Candidate A therefore does not split a transaction that currently rolls the whole backfill back on later failure.
+
 ### Freshness
 
 Preserved.
@@ -188,7 +200,7 @@ This candidate does not change:
 - requested `to_ts`;
 - provider fetch windows;
 - cache fallback policy;
-- response fields.
+- success response fields.
 
 ### Authentication
 
@@ -200,7 +212,7 @@ The route still depends on `get_current_user`; removing `DBConn` does not remove
 
 Preserved.
 
-`services/data` continues to use the public shared `get_conn()` helper; no service imports another service.
+`services/data` continues to use the public shared `get_conn()` helper; no service imports another service and `_shared` is unchanged.
 
 ---
 
@@ -244,11 +256,11 @@ latest_bar_ts SELECT
 → external provider await while same connection/transaction remains scoped to route
 ```
 
-Candidate A exits the connection context immediately after `latest_bar_ts`, so the pool context closes the transaction before external I/O.
+Candidate A exits the connection context immediately after `latest_bar_ts`, so the pool context finalizes the read-only transaction and returns the connection before external I/O.
 
-This removes the first provider wait from the DB transaction lifetime as well as the pool lease lifetime.
+After current `insert_bars()` commits a batch, later provider waits may no longer have an open transaction, but the connection is still reserved to the request. Therefore the primary fix is **pool-lease isolation**, not merely reducing `idle in transaction` time.
 
-Do not sell this PR as a transaction/VACUUM optimization unless runtime/DB evidence demonstrates that impact; the primary intended effect is capacity isolation.
+Do not sell this PR as a VACUUM/transaction optimization unless runtime DB evidence demonstrates such an impact.
 
 ---
 
@@ -275,16 +287,16 @@ The baseline should compare:
 
 - pool wait;
 - route p50/p95;
-- `/bars` latency during blocked provider calls;
+- `/bars` or `/health` latency during blocked provider calls;
 - throughput;
-- DB connection count;
+- DB connection state/transaction evidence;
 - number of external provider calls.
 
 ### Potential interleaving
 
 Another backfill can write between batches.
 
-Because rows are keyed and UPSERTed, this should remain logically safe, but tests must cover cursor progress and idempotency.
+Because rows are keyed and UPSERTed, this should remain logically safe, but existing incremental/idempotency tests must stay green.
 
 ### Failure between provider fetch and DB checkout
 
@@ -294,49 +306,66 @@ On retry, incremental state remains at the last committed timestamp and the prov
 
 That is recoverable/idempotent, though potentially wasteful under DB outage.
 
+### Error precedence
+
+Removing route-scoped DB acquisition means handler validation can run before the first explicit DB checkout. Under simultaneous invalid-input + DB-unavailable conditions, the response may become a useful validation 4xx where current code might first fail/wait on the DB dependency.
+
+This is documented in `23-candidate-a-deep-review.md`; do not hide it as “no observable change whatsoever.”
+
 ---
 
 ## 8. Deterministic before/after regression
 
-The contributor test already prepared gives a clean prediction.
+The contributor diagnostics now force their own **2-connection test pool**, so they do not depend on the repository-wide default remaining 10.
 
-### Before Candidate A
-
-With default max pool size 10:
+### Baseline diagnostic on current main
 
 ```text
-10 concurrent fake provider calls blocked
-→ each request already owns DBConn
-→ /health cannot obtain DB connection
-→ /health blocks
+1 blocked fake provider call
+→ 1/2 DB leases retained
+→ /health still succeeds
+
+2 blocked fake provider calls
+→ 2/2 DB leases retained
+→ /openapi.json stays responsive
+→ /health blocks until provider release
 ```
+
+This is `tools/test_backfill_pool_pressure_draft.py`.
 
 ### After Candidate A
 
-Expected:
+The post-fix regression intentionally starts **4 provider waits with pool max_size=2**:
 
 ```text
-10 concurrent fake provider calls blocked
-→ DB leases already released after latest_bar_ts
-→ /health obtains a DB connection
-→ /health returns while provider calls remain blocked
+4 backfills
+→ each performs a short latest_bar_ts checkout
+→ each releases DB before provider wait
+→ all 4 can reach the blocked fake provider (> pool size)
+→ /health can still acquire DB while all 4 provider waits remain active
 ```
 
-This is a particularly strong regression because:
+On the old route-level `DBConn` implementation, only two requests can reach provider I/O, so the regression fails before the health assertion.
+
+This is `tools/test_candidate_a_regression_draft.py`.
+
+This pair is strong because:
 
 - no external network is involved;
-- no timing from Yahoo/FRED is required;
-- the variable being tested is resource lifetime;
-- the same test can be run before and after.
+- no Yahoo/FRED timing is involved;
+- pool capacity is controlled by the test rather than assumed;
+- non-DB `/openapi.json` separates generic server starvation from DB-backed starvation;
+- the post-fix test proves **more provider waits than DB pool slots** can coexist with a DB-backed request.
 
 ---
 
 ## 9. Tests if this candidate is selected
 
-Likely upstream test additions:
+Likely upstream coverage:
 
-- [ ] slow/blocking fake connector does not monopolize the DB pool after timestamp lookup;
+- [ ] blocking fake connector can have >test-pool-size provider calls in flight without retaining DB leases;
 - [ ] `/health` or another DB-only request remains serviceable while provider I/O is blocked;
+- [ ] non-DB control remains serviceable;
 - [ ] existing incremental second-call test remains green;
 - [ ] upstream provider failure remains `502 BARS_UPSTREAM_UNAVAILABLE`;
 - [ ] DB write failure still fails explicitly;
@@ -345,7 +374,7 @@ Likely upstream test additions:
 - [ ] multi-batch backfill still advances correctly;
 - [ ] existing 5-venue routing tests remain green.
 
-The exact regression should avoid relying on private shared-pool internals if endpoint-level behavior can prove the property.
+Prefer endpoint-level behavior over assertions against private `_shared` pool internals.
 
 ---
 
@@ -355,11 +384,13 @@ It does not inherently limit:
 
 - total external provider concurrency;
 - factor macro fan-out;
+- cold macro same-key stampede;
 - yfinance queue length;
 - FRED request burst rate;
 - HTTP connection churn;
 - duplicate same-key provider work;
 - synchronized live-runner polls;
+- client-timeout work that may survive disconnect;
 - CPU/event-loop saturation unrelated to DB capacity.
 
 Therefore after Candidate A we must rerun the **same representative mixed benchmark**.
@@ -375,10 +406,10 @@ Only if evidence requires it:
 ```text
 A. narrow DB lease
 ↓
-rerun benchmark
+rerun exact workload
 ↓
 provider work still overwhelms service?
-    yes → evaluate admission gate before provider work
+    yes → evaluate admission gate / measured factor multiplier
     no  → stop; do not add extra machinery
 ```
 
@@ -391,8 +422,9 @@ If an admission gate becomes necessary after A, it can then be placed without qu
 Choose Candidate A for implementation only if runtime evidence shows:
 
 1. slow/in-flight backfills materially consume pool capacity;
-2. unrelated DB-backed requests wait as a result;
-3. releasing provider I/O from the DB lease improves that condition in the deterministic experiment;
-4. no correctness regression appears in incremental/idempotency tests.
+2. unrelated DB-backed requests wait as a result while non-DB control remains healthy;
+3. DB-side evidence is consistent with the resource-lifetime model;
+4. releasing provider I/O from the DB lease improves that condition in the deterministic experiment;
+5. no correctness regression appears in incremental/idempotency/error-path tests.
 
 Until those conditions are measured, this remains a prepared candidate, not the selected solution.
