@@ -64,6 +64,7 @@ Faysk/inalpha
 | `38-runner-poll-harness.md` | Live-runner-like fresh polling harness, aligned-vs-stagger control and in-flight DB/provider sampling |
 | `39-mixed-workload-harness.md` | Combined cold factor/macro + runner polling + health/openapi workload used for the issue-level before/after decision gate |
 | `40-local-preflight-helper.md` | Safe branch/SHA/clean-tree checks plus contributor-diagnostic materialization and cleanup workflow for Windows/WSL/Linux |
+| `41-benchmark-db-state-determinism.md` | Dedicated resettable `inalpha_issue107` database and factor-cache/DB-cache discipline so cold/warm and before/after runs are comparable |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression with pool=2 and four simultaneous provider waits |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
