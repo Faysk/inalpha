@@ -28,7 +28,7 @@ No external market-data provider is contacted for a venue that has been replaced
 The wrapper also adds contributor-only diagnostics:
 
 - ``X-Issue107-Worker-Pid`` on every response, to observe worker distribution;
-- ``GET /__issue107/state`` with per-process fake-provider counters;
+- ``GET /__issue107/state`` with aggregate and per-venue fake-provider counters;
 - Psycopg pool ``get_stats()`` values flattened into the DB-free state response;
 - explicit start/done/cancel/fail logs around the async provider waiter;
 - separate sync-thread counters in ``thread`` mode, so cancellation of the asyncio waiter is not
@@ -62,6 +62,7 @@ _provider_started = 0
 _provider_completed = 0
 _provider_cancelled = 0
 _provider_failed = 0
+_provider_by_venue: dict[str, dict[str, int]] = {}
 
 _thread_lock = threading.Lock()
 _thread_active = 0
@@ -102,6 +103,21 @@ def _fake_venues() -> list[str]:
             seen.add(venue)
             out.append(venue)
     return out or ["binance"]
+
+
+def _venue_counter(venue: str) -> dict[str, int]:
+    return _provider_by_venue.setdefault(
+        venue,
+        {"active": 0, "started": 0, "completed": 0, "cancelled": 0, "failed": 0},
+    )
+
+
+def _venue_state() -> dict[str, int]:
+    out: dict[str, int] = {}
+    for venue, counters in sorted(_provider_by_venue.items()):
+        for key, value in counters.items():
+            out[f"venue_{venue}_{key}"] = value
+    return out
 
 
 def _sync_sleep(delay_s: float, pid: int, venue: str, symbol: str) -> None:
@@ -194,11 +210,14 @@ class SlowIssue107Connector:
                 f"invalid ISSUE107_PROVIDER_MODE={mode!r}; expected 'async' or 'thread'"
             )
         pid = os.getpid()
+        venue_counter = _venue_counter(self._venue)
 
         _provider_started += 1
         _provider_active += 1
+        venue_counter["started"] += 1
+        venue_counter["active"] += 1
         _logger.warning(
-            "issue107_fake_provider_start pid=%s venue=%s symbol=%s timeframe=%s mode=%s delay_s=%s active=%s started=%s",
+            "issue107_fake_provider_start pid=%s venue=%s symbol=%s timeframe=%s mode=%s delay_s=%s active=%s started=%s venue_active=%s venue_started=%s",
             pid,
             self._venue,
             symbol,
@@ -207,6 +226,8 @@ class SlowIssue107Connector:
             delay_s,
             _provider_active,
             _provider_started,
+            venue_counter["active"],
+            venue_counter["started"],
         )
 
         try:
@@ -235,8 +256,9 @@ class SlowIssue107Connector:
             ]
 
             _provider_completed += 1
+            venue_counter["completed"] += 1
             _logger.warning(
-                "issue107_fake_provider_done pid=%s venue=%s symbol=%s timeframe=%s mode=%s active=%s completed=%s rows=%s",
+                "issue107_fake_provider_done pid=%s venue=%s symbol=%s timeframe=%s mode=%s active=%s completed=%s rows=%s venue_completed=%s",
                 pid,
                 self._venue,
                 symbol,
@@ -245,12 +267,14 @@ class SlowIssue107Connector:
                 _provider_active,
                 _provider_completed,
                 len(rows),
+                venue_counter["completed"],
             )
             return rows
         except asyncio.CancelledError:
             _provider_cancelled += 1
+            venue_counter["cancelled"] += 1
             _logger.warning(
-                "issue107_fake_provider_cancelled pid=%s venue=%s symbol=%s timeframe=%s mode=%s active=%s cancelled=%s",
+                "issue107_fake_provider_cancelled pid=%s venue=%s symbol=%s timeframe=%s mode=%s active=%s cancelled=%s venue_cancelled=%s",
                 pid,
                 self._venue,
                 symbol,
@@ -258,12 +282,14 @@ class SlowIssue107Connector:
                 mode,
                 _provider_active,
                 _provider_cancelled,
+                venue_counter["cancelled"],
             )
             raise
         except Exception:
             _provider_failed += 1
+            venue_counter["failed"] += 1
             _logger.exception(
-                "issue107_fake_provider_failed pid=%s venue=%s symbol=%s timeframe=%s mode=%s active=%s failed=%s",
+                "issue107_fake_provider_failed pid=%s venue=%s symbol=%s timeframe=%s mode=%s active=%s failed=%s venue_failed=%s",
                 pid,
                 self._venue,
                 symbol,
@@ -271,10 +297,12 @@ class SlowIssue107Connector:
                 mode,
                 _provider_active,
                 _provider_failed,
+                venue_counter["failed"],
             )
             raise
         finally:
             _provider_active -= 1
+            venue_counter["active"] -= 1
 
     async def close(self) -> None:
         return None
@@ -301,6 +329,7 @@ async def _issue107_state() -> dict[str, int | str]:
         "completed": _provider_completed,
         "cancelled": _provider_cancelled,
         "failed": _provider_failed,
+        **_venue_state(),
         **_thread_state(),
         **_pool_state(),
     }
@@ -312,6 +341,10 @@ async def _issue107_lifespan(app_obj: Any):  # type: ignore[no-untyped-def]
     async with _original_lifespan(app_obj):
         venues = _fake_venues()
         for venue in venues:
+            _provider_by_venue.setdefault(
+                venue,
+                {"active": 0, "started": 0, "completed": 0, "cancelled": 0, "failed": 0},
+            )
             connectors_base._REGISTRY[venue] = SlowIssue107Connector(venue)
         _logger.warning(
             "issue107_fake_provider_installed pid=%s venues=%s mode=%s delay_s=%s bars_per_fetch=%s",
