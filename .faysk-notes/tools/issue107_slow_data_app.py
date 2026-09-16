@@ -18,17 +18,26 @@ Thread-backed fake provider (models connectors that wrap a synchronous SDK with 
     ISSUE107_PROVIDER_MODE=thread ISSUE107_PROVIDER_DELAY_S=5 \
       uv run uvicorn issue107_slow_data_app:app --host 127.0.0.1 --port 18001 --workers 1
 
-The real data-service lifespan still runs (DB pool, normal connector init, etc.), then this wrapper
-replaces only the venues listed in ``ISSUE107_FAKE_VENUES`` with deterministic local connectors.
-The default is ``binance``. A listed venue is installed even when its real connector was skipped at
-startup (for example ``fred`` without an API key), so macro-capacity tests never require real keys.
+The real data-service lifespan still runs so the benchmark exercises the real DB pool and service
+startup path. Before importing the real app, however, this wrapper forces
+``CONSTITUENT_SNAPSHOT_INDICES`` empty so the startup-immediate constituent scheduler cannot make an
+unrelated real provider call from the contributor environment.
 
-No external market-data provider is contacted for a venue that has been replaced by the fake.
+After normal startup, every venue listed in ``ISSUE107_FAKE_VENUES`` is replaced with a deterministic
+local connector. Every other venue currently registered in the OHLCV connector registry is replaced
+with a fail-closed connector that raises before provider I/O. The default fake venue is ``binance``.
+A listed fake is installed even when its real connector was skipped at startup (for example ``fred``
+without an API key), so macro-capacity tests never require real keys.
+
+The benchmark therefore does not rely only on the caller choosing the right venue: unexpected
+``/backfill/bars`` traffic to another registered OHLCV venue is blocked rather than reaching a real
+market-data provider.
 
 The wrapper also adds contributor-only diagnostics:
 
 - ``X-Issue107-Worker-Pid`` on every response, to observe worker distribution;
 - ``GET /__issue107/state`` with aggregate and per-venue fake-provider counters;
+- explicit ``fake_venues`` / ``blocked_venues`` and scheduler-disable state;
 - per-path HTTP request totals/in-flight counts for factor→data fan-out measurement;
 - Psycopg pool ``get_stats()`` values flattened into the DB-free state response;
 - explicit start/done/cancel/fail logs around the async provider waiter;
@@ -52,6 +61,12 @@ from typing import Any
 from fastapi import Request
 import inalpha_shared.db as shared_db
 
+# The production scheduler performs a catch-up tick immediately on startup when indices are
+# configured. A contributor load harness must not let unrelated root .env state trigger provider
+# traffic. Process environment has higher precedence than the root .env, and this must happen before
+# importing inalpha_data.main because that module constructs its settings at import time.
+os.environ["CONSTITUENT_SNAPSHOT_INDICES"] = ""
+
 from inalpha_data.connectors import _base as connectors_base
 from inalpha_data.main import app
 
@@ -64,6 +79,7 @@ _provider_completed = 0
 _provider_cancelled = 0
 _provider_failed = 0
 _provider_by_venue: dict[str, dict[str, int]] = {}
+_blocked_venues: list[str] = []
 
 _http_total: dict[str, int] = {}
 _http_inflight: dict[str, int] = {}
@@ -203,6 +219,29 @@ def _pool_state() -> dict[str, int]:
     for key, value in stats.items():
         out[f"pool_{key}"] = int(value)
     return out
+
+
+class BlockedIssue107Connector:
+    """Fail closed for any registered OHLCV venue not explicitly replaced by a fake."""
+
+    def __init__(self, venue: str) -> None:
+        self._venue = venue
+
+    async def fetch_bars(
+        self,
+        symbol: str,
+        timeframe: str,
+        since: datetime,
+        limit: int = 1000,
+    ) -> list[tuple[datetime, float, float, float, float, float]]:
+        del symbol, timeframe, since, limit
+        raise RuntimeError(
+            f"issue107 contributor harness blocked real provider access for venue {self._venue!r}; "
+            "add the venue to ISSUE107_FAKE_VENUES only if the workload intentionally needs it"
+        )
+
+    async def close(self) -> None:
+        return None
 
 
 class SlowIssue107Connector:
@@ -347,6 +386,8 @@ async def _issue107_state() -> dict[str, int | str]:
         "pid": os.getpid(),
         "mode": os.environ.get("ISSUE107_PROVIDER_MODE", "async").strip().lower(),
         "fake_venues": ",".join(_fake_venues()),
+        "blocked_venues": ",".join(_blocked_venues),
+        "snapshot_scheduler_forced_disabled": 1,
         "fake_bars_per_fetch": int(os.environ.get("ISSUE107_FAKE_BARS_PER_FETCH", "1")),
         "active": _provider_active,
         "started": _provider_started,
@@ -362,19 +403,29 @@ async def _issue107_state() -> dict[str, int | str]:
 
 @asynccontextmanager
 async def _issue107_lifespan(app_obj: Any):  # type: ignore[no-untyped-def]
-    """Run normal startup, then replace selected venue registry entries with local fakes."""
+    """Run normal startup, then fake requested venues and block every other OHLCV registry venue."""
+    global _blocked_venues
+
     async with _original_lifespan(app_obj):
         venues = _fake_venues()
+        existing = sorted(connectors_base._REGISTRY)
+        _blocked_venues = [venue for venue in existing if venue not in venues]
+
+        for venue in _blocked_venues:
+            connectors_base._REGISTRY[venue] = BlockedIssue107Connector(venue)
+
         for venue in venues:
             _provider_by_venue.setdefault(
                 venue,
                 {"active": 0, "started": 0, "completed": 0, "cancelled": 0, "failed": 0},
             )
             connectors_base._REGISTRY[venue] = SlowIssue107Connector(venue)
+
         _logger.warning(
-            "issue107_fake_provider_installed pid=%s venues=%s mode=%s delay_s=%s bars_per_fetch=%s",
+            "issue107_provider_isolation_installed pid=%s fake_venues=%s blocked_venues=%s mode=%s delay_s=%s bars_per_fetch=%s snapshot_scheduler_forced_disabled=true",
             os.getpid(),
             venues,
+            _blocked_venues,
             os.environ.get("ISSUE107_PROVIDER_MODE", "async"),
             os.environ.get("ISSUE107_PROVIDER_DELAY_S", "5"),
             os.environ.get("ISSUE107_FAKE_BARS_PER_FETCH", "1"),
