@@ -27,7 +27,7 @@ Faysk/inalpha
 | `01-issue-107-plan.md` | Technical plan for issue #107 |
 | `02-request-flow-map.md` | Exact request/concurrency flow map for factor → data → providers/DB |
 | `03-reproduction-plan.md` | Reproducible load-test design and commands |
-| `04-baseline-results.md` | Pre-change measurements and observations |
+| `04-baseline-results.md` | Pre-change measurements and observations, including concrete transport-error classification and DB/non-DB isolation controls |
 | `05-solution-design.md` | Chosen implementation design after evidence is collected |
 | `06-implementation-log.md` | Chronological implementation/debugging log |
 | `07-before-after-results.md` | Baseline vs fixed benchmark comparison |
@@ -43,7 +43,9 @@ Faysk/inalpha
 | `17-candidate-fix-b-bound-macro-fanout.md` | Secondary factor-side candidate if cold macro fan-out remains material after the primary bottleneck is addressed |
 | `18-candidate-fix-c-data-admission-control.md` | Secondary data-side admission/queue candidate if external in-flight work still saturates the service |
 | `19-do-not-do-first.md` | Explicitly rejected first moves: pool/worker inflation, late semaphore, more retries, freshness downgrade, premature distributed machinery |
-| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process diagnostic for DB-pool starvation while provider I/O is blocked; includes non-DB control |
+| `20-candidate-fix-d-factor-http-pooling.md` | Low-priority connection-reuse candidate with explicit bearer-token isolation requirements |
+| `tools/test_backfill_pool_pressure_draft.py` | Contributor-only deterministic in-process baseline diagnostic; includes non-DB control |
+| `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A regression draft: >pool-size provider waits must coexist with responsive DB-backed health |
 | `tools/issue107_slow_data_app.py` | Temporary data-service wrapper that installs a fake slow `binance` connector after normal startup |
 | `tools/issue107_load_probe.py` | Local concurrent backfill + DB/non-DB probe preserving concrete HTTPX error types and latency percentiles |
 | `tools/candidate_a_narrow_db_lease.patch` | Unapplied patch draft for Candidate A; documentation artifact only until baseline evidence selects it |
