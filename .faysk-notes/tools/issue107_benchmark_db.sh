@@ -56,11 +56,10 @@ if [[ "$actual_database" != "$EXPECTED_DATABASE" ]]; then
 fi
 
 bars_regclass="$(psql_scalar "select coalesce(to_regclass('public.bars')::text, '');")"
-if [[ "$bars_regclass" == "bars" ]]; then
-  bars_ready=true
-else
-  bars_ready=false
-fi
+case "$bars_regclass" in
+  bars|public.bars) bars_ready=true ;;
+  *) bars_ready=false ;;
+esac
 
 printf 'benchmark_database=%s\n' "$actual_database"
 printf 'bars_table_ready=%s\n' "$bars_ready"
