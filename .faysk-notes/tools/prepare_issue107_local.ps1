@@ -18,6 +18,9 @@ $Files = [ordered]@{
     ".faysk-notes/tools/issue107_factor_macro_probe.py" = "services/factor/issue107_factor_macro_probe.py"
     ".faysk-notes/tools/issue107_runner_poll_probe.py" = "services/factor/issue107_runner_poll_probe.py"
     ".faysk-notes/tools/issue107_mixed_workload_probe.py" = "services/factor/issue107_mixed_workload_probe.py"
+    ".faysk-notes/tools/issue107_capture_env.ps1" = "scripts/issue107_capture_env.ps1"
+    ".faysk-notes/tools/issue107_benchmark_db.ps1" = "scripts/issue107_benchmark_db.ps1"
+    ".faysk-notes/tools/issue107_benchmark_db.sh" = "scripts/issue107_benchmark_db.sh"
 }
 
 function Require-Command([string]$Name) {
@@ -118,14 +121,14 @@ foreach ($entry in $Files.GetEnumerator()) {
     }
 
     # PowerShell normally joins native-command output as lines. Reconstruct with LF and write without
-    # a UTF-8 BOM so Python files remain byte-clean and comparable across Windows/WSL.
+    # a UTF-8 BOM so Python/scripts remain byte-clean and comparable across Windows/WSL.
     $text = ($content -join "`n") + "`n"
     [System.IO.File]::WriteAllText((Join-Path $repoRoot $destination), $text, $utf8NoBom)
     Write-Host "materialized $destination"
 }
 
 Write-Host ""
-Write-Host "Diagnostic files are intentionally UNTRACKED:"
+Write-Host "Diagnostic/helper files are intentionally UNTRACKED:"
 & git status --short
 
 Write-Host ""
@@ -147,4 +150,7 @@ foreach ($cmd in @("docker", "uv", "python", "node", "pnpm")) {
 Write-Host ""
 Write-Host "Next: read the runbook without switching branches:"
 Write-Host "  git show origin/notes/issue-107:.faysk-notes/11-local-test-runbook.md"
+Write-Host "Useful local helpers now materialized under scripts/:"
+Write-Host "  scripts/issue107_capture_env.ps1"
+Write-Host "  scripts/issue107_benchmark_db.ps1"
 Write-Host "Cleanup later with: & `"$PSCommandPath`" -Cleanup"
