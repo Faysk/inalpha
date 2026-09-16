@@ -54,9 +54,51 @@ is_tracked() {
   git ls-files --error-unmatch -- "$1" >/dev/null 2>&1
 }
 
+validate_python_syntax() {
+  local py_files=()
+  local path
+  for path in "${destinations[@]}"; do
+    [[ "$path" == *.py ]] && py_files+=("$path")
+  done
+  if ((${#py_files[@]} == 0)); then
+    return
+  fi
+  if ! command -v python >/dev/null 2>&1; then
+    echo "WARNING: python not found; skipping syntax-only validation of materialized .py diagnostics" >&2
+    return
+  fi
+
+  python -c '
+import ast
+import pathlib
+import sys
+for raw in sys.argv[1:]:
+    path = pathlib.Path(raw)
+    ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+print(f"python_syntax_ok={len(sys.argv) - 1}")
+' "${py_files[@]}"
+}
+
+validate_shell_syntax() {
+  local path
+  local count=0
+  for path in "${destinations[@]}"; do
+    if [[ "$path" == *.sh ]]; then
+      bash -n "$path"
+      ((count += 1))
+    fi
+  done
+  printf 'bash_syntax_ok=%s\n' "$count"
+}
+
 require_cmd git
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
+
+if ((${#sources[@]} != ${#destinations[@]})); then
+  echo "Internal helper error: source/destination arrays have different lengths." >&2
+  exit 1
+fi
 
 branch="$(git branch --show-current)"
 if [[ "$branch" != "$EXPECTED_BRANCH" ]]; then
@@ -133,6 +175,11 @@ for i in "${!sources[@]}"; do
   git show "${NOTES_REF}:${source_path}" > "$destination"
   echo "materialized $destination"
 done
+
+echo
+echo "Syntax-only validation of materialized contributor tooling:"
+validate_python_syntax
+validate_shell_syntax
 
 echo
 echo "Diagnostic/helper files are intentionally UNTRACKED:"
