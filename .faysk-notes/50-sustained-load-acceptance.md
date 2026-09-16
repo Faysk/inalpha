@@ -21,21 +21,15 @@ Therefore runtime acceptance gets a separate sustained stage after the lower-lev
 
 ---
 
-## 2. Prepared bounded soak tool
+## 2. Two sustained tools with different purposes
 
-Contributor-only tool:
+The first contributor-only tool is:
 
 ```text
 tools/issue107_sustained_mixed_probe.py
 ```
 
-Materialized as:
-
-```text
-services/factor/issue107_sustained_mixed_probe.py
-```
-
-It combines bounded repeated cycles of:
+It established the bounded-soak mechanics and combines repeated cycles of:
 
 ```text
 factor /score traffic
@@ -44,47 +38,62 @@ factor /score traffic
 + /openapi.json DB-free controls
 ```
 
-It refuses to run unless the contributor data/factor safety endpoints prove that factor is routed to the intended fake data service and every required provider venue is fake.
+Static review found that v1 sends `factor_concurrency` requests for the same factor symbol inside each cycle. That makes it useful as H11 same-key stress evidence, but not an exact model of the issue's cross-sectional multi-symbol workload.
 
-It also caps the number of pending cycles. When the service falls behind, new cycles are skipped instead of allowing an unbounded local request backlog.
+The acceptance-oriented companion is now:
 
-`cycles_skipped_pending_cap` is therefore a capacity signal and must be reported, not hidden.
+```text
+tools/issue107_sustained_acceptance_probe.py
+```
+
+Materialized as:
+
+```text
+services/factor/issue107_sustained_acceptance_probe.py
+```
+
+It reuses the already-reviewed request/result helpers from v1 but adds:
+
+```text
+--factor-symbol-mode unique   # default; representative cross-sectional shape
+--factor-symbol-mode same     # H11 stress control
+```
+
+and improves bounded scheduling/settling so a delayed scheduler does not inject a cycle after the requested duration and unfinished cycles are reported as backlog evidence rather than making the entire final summary disappear.
 
 ---
 
-## 3. Important static-review limitation in v1
+## 3. Safety model
 
-The current v1 sustained tool creates one new factor symbol per cycle and then sends `factor_concurrency` concurrent requests for **that same symbol**.
-
-Therefore:
+Both sustained tools require the contributor safety chain from `49-runtime-safety-order.md`:
 
 ```text
-factor_concurrency > 1
+dedicated benchmark DB
+→ issue107_slow_data_app
+→ all workload venues fake
+→ issue107_factor_app
+→ factor routed to fake data URL
+→ contributor diagnostic preflight PASS
+→ only then load
 ```
 
-also exercises H11 same-score-key cold duplication inside every cycle.
-
-That is a useful stress case, but it is **not identical to the issue's cross-sectional multi-symbol agent workload**.
-
-Do not describe v1 sustained results as the canonical cross-sectional acceptance result unless the probe is extended to support distinct factor symbols within each cycle.
-
-Runtime interpretation:
+The acceptance probe inherits the base probe's preflight and therefore refuses to schedule load unless:
 
 ```text
-v1 same-key sustained
-→ H11-heavy stress evidence
-
-cross-sectional sustained
-→ still needs unique-symbol-per-cycle-wave support before final issue-level p95 evidence
+binance/fred + all runner venues are fake
+factor data_service_url == checked fake data URL
+factor expected_data_url == checked fake data URL
+macro_enabled == true
+fake bars per fetch >= 1000
 ```
 
-This distinction prevents us from overloading a pathological same-key pattern and then claiming it exactly represents the reported production workload.
+No real provider is part of the intended workload.
 
 ---
 
 ## 4. Required sustained scenarios
 
-After the probe supports both symbol shapes, keep two explicit scenarios rather than blending them:
+Keep two explicit factor symbol shapes rather than blending them.
 
 ### O1 — representative cross-sectional sustained
 
@@ -114,7 +123,34 @@ Do not include O3 merely because it is available; only run/use it if the earlier
 
 ---
 
-## 5. Initial duration versus PR-quality evidence
+## 5. Bounded backlog behavior
+
+The acceptance probe keeps the pending-cycle cap from v1.
+
+When the service cannot drain work quickly enough:
+
+```text
+pending cycles >= cap
+→ skip new injection
+→ increment cycles_skipped_pending_cap
+```
+
+At the end it also reports:
+
+```text
+cycles_started
+cycles_completed
+cycles_pending_after_settle
+cycle_task_errors
+```
+
+Pending cycles are cancelled only after the settle window expires and are explicitly counted.
+
+Do not treat skipped or pending cycles as successful throughput. They are direct capacity/backlog evidence.
+
+---
+
+## 6. Initial duration versus PR-quality evidence
 
 Use a short bounded run first to validate the harness:
 
@@ -135,7 +171,7 @@ Do not cherry-pick the best repetition. Preserve and report all runs.
 
 ---
 
-## 6. Percentile interpretation
+## 7. Percentile interpretation
 
 Calculate p50/p95/p99 separately for:
 
@@ -153,9 +189,9 @@ Small mechanism probes such as D08/D10/D12 can still report their observed laten
 
 ---
 
-## 7. Progress / correctness interpretation
+## 8. Progress / correctness interpretation
 
-The sustained probe records operation progress, but zero progress is **context-dependent**.
+The sustained probes record operation progress, but zero progress is **context-dependent**.
 
 For example:
 
@@ -183,9 +219,9 @@ The stronger correctness rule remains:
 
 ---
 
-## 8. Acceptance signals
+## 9. Acceptance signals
 
-For the representative sustained workload, record at minimum:
+For O1 record at minimum:
 
 ```text
 DATA_SERVICE_UNREACHABLE / transport error count
@@ -195,8 +231,9 @@ runner backfill p50/p95/p99
 runner bars p50/p95/p99
 health p50/p95/p99
 openapi p50/p95/p99
-cycles started
+cycles started/completed
 cycles skipped because pending cap was reached
+cycles still pending after settle timeout
 DB pool available minimum
 DB pool waiting maximum
 provider active peaks by venue
@@ -217,7 +254,7 @@ That is not a successful #107 fix.
 
 ---
 
-## 9. Before / after discipline
+## 10. Before / after discipline
 
 Candidate comparison must hold constant:
 
@@ -235,6 +272,7 @@ runner stagger
 cycle interval
 duration
 pending-cycle cap
+settle timeout
 client timeouts
 ```
 
@@ -244,20 +282,27 @@ If upstream changes between runs, re-review the #107-sensitive paths before comp
 
 ---
 
-## 10. Tooling follow-up before runtime acceptance
+## 11. Recommended command shape
 
-Before using sustained results in the PR, extend/review the tool so that it can explicitly choose:
+After the safety checker passes, first smoke O1:
+
+```bash
+uv run python issue107_sustained_acceptance_probe.py \
+  --factor-symbol-mode unique \
+  --duration 30 \
+  --cycle-interval 1 \
+  --factor-concurrency 4 \
+  --runner-runs 8 \
+  --runner-stagger-ms 0
+```
+
+O2 changes only:
 
 ```text
 --factor-symbol-mode same
---factor-symbol-mode unique
 ```
 
-and ensure scheduling does not inject a cycle after the requested duration boundary.
-
-Also make settle-timeout failures preserve enough partial evidence to diagnose backlog rather than only terminating without a final summary.
-
-These are contributor-tool quality improvements, not production-scope changes.
+For PR-quality before/after evidence, increase the evidence window only after the 30-second run behaves predictably and preserve the same settings on both revisions.
 
 ---
 
@@ -276,4 +321,4 @@ sustained representative workload
 → does the selected fix actually satisfy #107 over time?
 ```
 
-Do not use the sustained v1 same-key stress output as the final cross-sectional acceptance evidence until its factor symbol shape is made representative.
+The previous same-key-only limitation is now retained as an explicit stress control rather than being mistaken for the canonical cross-sectional workload.
