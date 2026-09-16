@@ -20,6 +20,7 @@ The wrapper also adds contributor-only diagnostics:
 
 - ``X-Issue107-Worker-Pid`` on every response, to observe worker distribution;
 - ``GET /__issue107/state`` with per-process fake-provider counters;
+- Psycopg pool ``get_stats()`` values flattened into the DB-free state response;
 - explicit start/done/cancel/fail logs around the async provider waiter;
 - separate sync-thread counters in ``thread`` mode, so cancellation of the asyncio waiter is not
   confused with stopping an already-running synchronous worker function.
@@ -39,6 +40,7 @@ from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import Request
+import inalpha_shared.db as shared_db
 
 from inalpha_data.connectors import _base as connectors_base
 from inalpha_data.main import app
@@ -104,6 +106,23 @@ def _thread_state() -> dict[str, int]:
             "thread_started": _thread_started,
             "thread_completed": _thread_completed,
         }
+
+
+def _pool_state() -> dict[str, int]:
+    """Flatten Psycopg pool stats without acquiring a DB connection.
+
+    This intentionally reads the shared module's private global pool because this is contributor-only
+    diagnostics. Production code should not depend on ``inalpha_shared.db._pool``.
+    """
+    pool = shared_db._pool  # type: ignore[attr-defined]
+    if pool is None:
+        return {"pool_initialized": 0}
+
+    stats = pool.get_stats()
+    out: dict[str, int] = {"pool_initialized": 1}
+    for key, value in stats.items():
+        out[f"pool_{key}"] = int(value)
+    return out
 
 
 class SlowIssue107Connector:
@@ -200,7 +219,7 @@ async def _issue107_worker_header(request: Request, call_next: Any) -> Any:
 
 @app.get("/__issue107/state", include_in_schema=False)
 async def _issue107_state() -> dict[str, int | str]:
-    """Per-worker fake-provider counters; intentionally DB-free."""
+    """Per-worker provider/thread/pool state without acquiring a DB connection."""
     return {
         "pid": os.getpid(),
         "mode": os.environ.get("ISSUE107_PROVIDER_MODE", "async").strip().lower(),
@@ -210,6 +229,7 @@ async def _issue107_state() -> dict[str, int | str]:
         "cancelled": _provider_cancelled,
         "failed": _provider_failed,
         **_thread_state(),
+        **_pool_state(),
     }
 
 
