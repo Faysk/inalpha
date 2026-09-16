@@ -105,15 +105,57 @@ Created:
 
 - `10-active-investigation.md`
 
+### Static deepening — pool starvation chain and deterministic diagnostic
+
+Continued code-path review while the contributor machine is offline.
+
+Additional confirmed facts:
+
+- `data-service` calls `init_pool()` without overriding the shared defaults: `max_size=10`, checkout timeout 30s per worker.
+- `GET /health` itself requires `DBConn` before it can run `SELECT 1`.
+- production compose runs `data` with `WORKERS=2` and probes `/health` with a 2-second Docker healthcheck timeout.
+- factor `DataClient` uses a 30-second HTTP timeout for `GET /bars`; its GET path retries `httpx.RequestError` up to 3 times.
+- therefore pool wait and caller timeout are aligned closely enough to form a plausible retry-amplification path to `DATA_SERVICE_UNREACHABLE`.
+- yfinance's per-process `_FETCH_LOCK` can queue requests behind provider serialization while those requests still own route-scoped DB connections.
+- FRED uses `asyncio.to_thread` and has no connector-side admission gate, making current macro fan-out a useful second workload after the synthetic test.
+
+Refined hypotheses:
+
+```text
+H1  backfill retains scarce DB capacity across slow provider I/O
+H1b DB-pool wait reaches factor's HTTP timeout, turning capacity pressure into
+    RequestError/retries and eventually DATA_SERVICE_UNREACHABLE
+```
+
+Neither is yet called a measured root cause.
+
+Prepared a deterministic contributor-only diagnostic:
+
+```text
+.faysk-notes/tools/test_backfill_pool_pressure_draft.py
+```
+
+It uses a fake blocking connector and no external network. The control/pressure comparison is:
+
+```text
+9 blocked backfills  -> one pool slot remains -> /health should complete
+10 blocked backfills -> all default pool slots occupied -> /health should block
+```
+
+This is intended to be copied temporarily into `services/data/tests/` and run against the unmodified baseline. It is not upstream PR material as-is.
+
 ### Current next actions
 
 - [x] continue static path verification without waiting for maintainer reply
 - [x] confirm exact `DBConn` dependency lifetime
 - [x] confirm factor HTTP client lifetime
 - [x] confirm factor vs orchestration non-2xx semantics
+- [x] confirm `/health` shares the same DB pool dependency
+- [x] map 30s DB-pool checkout vs 30s factor HTTP timeout interaction
+- [x] prepare deterministic 9-vs-10 pool-pressure diagnostic
 - [ ] establish runnable contributor environment
 - [ ] run pre-change `data` and `factor` tests
-- [ ] build deterministic slow-provider reproduction
+- [ ] run deterministic slow-provider reproduction
 - [ ] capture one-worker baseline
 - [ ] capture production-like two-worker baseline
 - [ ] test live factor + macro fan-out
