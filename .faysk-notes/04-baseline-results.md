@@ -17,10 +17,11 @@ CPU:
 RAM:
 Data worker count:
 Factor worker count:
-Other service worker counts:
+Paper worker count:
 DB pool config observed:
 Deployment topology:
 Relevant env overrides:
+Fake provider mode/delay/bars-per-fetch:
 Cache state (cold/warm):
 ```
 
@@ -42,21 +43,24 @@ check-consistency:
 
 ## Scenario summary
 
-| Scenario | Topology / concurrency | Requests | HTTP success | Refresh progress | Fail | p50 | p95 | p99 | `DATA_SERVICE_UNREACHABLE` |
-|---|---|---:|---:|---:|---:|---:|---:|---:|---:|
-| Controlled small-pool diagnostic | pool=2 / 1 then 2 blocked | TBD | TBD | TBD | TBD | TBD | TBD | TBD | N/A |
-| Fake slow provider — 1 worker | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Fake slow provider — 2 workers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Client-timeout persistence | 1 worker / TBD attempts | TBD | TBD | N/A | TBD | TBD | TBD | TBD | N/A |
-| Live macro cold cache — single caller | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Live macro cold cache — concurrent callers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Live macro warm cache | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Panel 10 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Panel 50 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Panel 300 | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Runner-like steady poll | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Runner resume/warmup burst | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
-| Mixed | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD | TBD |
+| Scenario | Topology / concurrency | HTTP success | Refresh progress | Fail | p50 | p95 | p99 | Key signal |
+|---|---|---:|---:|---:|---:|---:|---:|---|
+| H8 pure macro cold same-key | factor unit / 6 callers | N/A | N/A | TBD | N/A | N/A | N/A | underlying fetch count |
+| H11 pure live-score cold same-key | factor unit / 6 callers | N/A | N/A | TBD | N/A | N/A | N/A | main data fetch count |
+| H1 controlled small-pool | pool=2 / 1 then 2 blocked | TBD | TBD | TBD | TBD | TBD | TBD | health vs OpenAPI isolation |
+| Fake slow provider — 1 worker | TBD | TBD | TBD | TBD | TBD | TBD | TBD | pool wait / health degradation |
+| H9 client-timeout persistence | 1 worker / TBD attempts | TBD | N/A | TBD | TBD | TBD | TBD | server work survives client deadline? |
+| Fake slow provider — 2 workers | TBD | TBD | TBD | TBD | TBD | TBD | TBD | PID distribution / client-visible effect |
+| Factor macro cold — single | 1 data / 1 factor | TBD | TBD | TBD | TBD | TBD | TBD | FRED provider calls |
+| Factor macro cold — same-key concurrent | 1 data / 1 factor / TBD callers | TBD | TBD | TBD | TBD | TBD | TBD | H8/H11 amplification |
+| Factor macro cold — unique price keys | 1 data / 1 factor / TBD callers | TBD | TBD | TBD | TBD | TBD | TBD | H8 with reduced H11 |
+| Factor macro warm | 1 data / 1 factor | TBD | TBD | TBD | TBD | TBD | TBD | post-population cache reuse |
+| Runner aligned | 1 data / 8 polls / 0 ms stagger | TBD | TBD | TBD | TBD | TBD | TBD | peak pool/provider overlap |
+| Runner stagger control | 1 data / 8 polls / 100 ms stagger | TBD | TBD | TBD | TBD | TBD | TBD | H6 delta |
+| Mixed M1 | cold factor same-key + 8 runner / 0 ms | TBD | TBD | TBD | TBD | TBD | TBD | issue-level baseline |
+| Mixed M2 | cold factor unique price keys + runner / 0 ms | TBD | TBD | TBD | TBD | TBD | TBD | H11 isolation |
+| Mixed M3 | cold factor same-key + runner / 100 ms | TBD | TBD | TBD | TBD | TBD | TBD | H6 isolation |
+| Mixed M1 — 2 data workers | production-like confirmation | TBD | TBD | TBD | TBD | TBD | TBD | client-visible + per-PID evidence |
 
 `Refresh progress` means the refresh actually advanced/inserted expected data, not merely that HTTP returned 200.
 
@@ -66,15 +70,45 @@ check-consistency:
 
 Record representative runs separately rather than reporting only the best one.
 
-| Scenario | Run | p95 | Errors | Refresh no-progress | Notes |
-|---|---:|---:|---:|---:|---|
-| TBD | 1 | TBD | TBD | TBD | |
-| TBD | 2 | TBD | TBD | TBD | |
-| TBD | 3 | TBD | TBD | TBD | |
+| Scenario | Run | p95 | Errors | Refresh no-progress | Pool wait | Notes |
+|---|---:|---:|---:|---:|---:|---|
+| TBD | 1 | TBD | TBD | TBD | TBD | |
+| TBD | 2 | TBD | TBD | TBD | TBD | |
+| TBD | 3 | TBD | TBD | TBD | TBD | |
 
 ---
 
 ## Detailed observations
+
+### H8 pure macro-cache structural diagnostic
+
+```text
+Sequential same-key fetch count:
+Concurrent callers:
+Concurrent same-key underlying fetch count:
+Result:
+```
+
+Expected current-main structural signal:
+
+```text
+sequential population works
+but
+simultaneous cold same-key callers do not coalesce
+```
+
+This proves H8 structure only, not production materiality.
+
+### H11 whole live-score structural diagnostic
+
+```text
+Concurrent identical live-score callers:
+Main _fetch_df entries before first cache put:
+Warm request main fetch count:
+Result:
+```
+
+This isolates the outer live-score cache from macro H8 by disabling macro in the unit diagnostic.
 
 ### Controlled small-pool diagnostic
 
@@ -151,11 +185,29 @@ Rows/progress:
 
 Do not assume a 50/50 split across two workers.
 
+### Direct Psycopg pool stats
+
+Record state from the contributor wrapper during the wave:
+
+```text
+pool_pool_size:
+pool_pool_available minimum:
+pool_requests_waiting maximum:
+pool_requests_num delta:
+pool_requests_queued delta:
+pool_requests_wait_ms delta:
+pool_requests_errors delta:
+pool_usage_ms delta:
+```
+
+Interpret cumulative values as deltas over one experiment. Do not mistake cumulative `requests_queued` for instantaneous queue depth; use `requests_waiting` for the sampled current queue.
+
 ### Client-timeout persistence / H9
 
 Run against the contributor fake provider over real TCP/Uvicorn, one worker first.
 
 ```text
+Fake provider mode: async/thread
 Fake provider delay:
 Client timeout:
 Attempts:
@@ -167,12 +219,14 @@ State immediately after client timeouts:
   completed:
   cancelled:
   failed:
+  thread_active:
 State after settle:
   started:
   active:
   completed:
   cancelled:
   failed:
+  thread_active:
 ```
 
 Interpretation:
@@ -182,24 +236,34 @@ client timeout + active > 0 afterward
 → old server/provider work survived caller deadline in this topology
 
 cancelled ~= started and active quickly 0
-→ disconnect cancellation propagated promptly
+→ async cancellation propagated promptly
+
+thread_active remains > 0 after async waiter/caller cancellation
+→ underlying synchronous provider work outlived the asyncio request path
 
 completed rises only after clients timed out
 → retries/new callers could overlap older work; H9 support
 ```
 
-Do not assume executor-backed real providers obey the fake asyncio-sleep cancellation behavior exactly.
+Do not assume real providers behave exactly like either fake mode; the two modes establish cancellation boundaries.
 
 ### Live factor macro
 
+Use `36-safe-full-stack-macro-harness.md`.
+
 ```text
-Macro series requested:
-Data calls:
-Backfills:
+Macro factor ids selected:
+Unique FRED series expected:
+Actual factor→data POST /backfill count:
+Actual factor→data GET /bars count:
+Binance provider calls:
+FRED provider calls:
 Cold single-caller behavior:
-Cold concurrent-caller behavior:
+Cold same-symbol concurrent behavior:
+Cold unique-symbol concurrent behavior:
 Warm-cache behavior:
 Macro degradation/failures:
+Pool wait/available minimum:
 HTTP client/connection observations:
 ```
 
@@ -208,24 +272,40 @@ HTTP client/connection observations:
 ```text
 Concurrent factor callers:
 Unique macro cache keys requested:
-Actual _fetch_macro_series network/data fetches:
-Actual /backfill/bars calls attributable to macro:
-Actual /bars calls attributable to macro:
-Duplicate-work ratio = actual fetches / unique keys:
-Pure diagnostic current-main fetch_count (6 same-key callers):
+Actual macro data/provider fetches:
+Duplicate-work ratio = actual same-key fetches / unique keys:
+Pure H8 diagnostic current-main fetch_count:
 ```
 
 Interpretation:
 
 ```text
-sequential unique-key ratio ≈ 1
-but concurrent cold ratio >> 1
-→ H8 evidence
+sequential/warm reuse works
+but concurrent cold same-key ratio >> 1
+→ H8 service-level evidence
 ```
 
 Do not count 18 different FRED series as duplicate work. H8 is specifically about repeated fetches for the **same macro cache key** before first population completes.
 
+#### Whole live-score H11 isolation
+
+Compare:
+
+```text
+same-symbol cold concurrent callers
+vs
+unique-symbol cold concurrent callers
+```
+
+Main price keys are shared only in the first case; macro/date keys remain shared in both.
+
+A large M1/same-symbol delta over unique-symbol behavior supports H11 materiality.
+
 ### Factor panel control
+
+Panel is no longer the primary reproduction path because current main already bounds panel fetch concurrency and panel scoring avoids forced per-symbol fresh backfills.
+
+If run as a control:
 
 ```text
 Observed:
@@ -235,17 +315,63 @@ Did any per-symbol backfill occur?:
 Failure mode:
 ```
 
-### Live runner / polling
+Do not prioritize panel tuning unless this current behavior still reproduces a material problem.
+
+### Live runner aligned vs staggered / H6
+
+Use `38-runner-poll-harness.md`.
 
 ```text
 Run count:
-Observed cadence:
-Burst synchronization:
-Backfill/read request count:
-Interaction with factor traffic:
+Fake provider delay:
+Stagger:
+POST /backfill count:
+GET /bars count:
+Runner p50/p95/p99:
+Backfill transport errors:
+Bars transport errors:
+Provider active max:
+Per-venue active max:
+Backfill HTTP in-flight max:
+GET /bars in-flight max:
+Pool available min:
+Pool waiting max:
+Pool wait delta:
 ```
 
+Compare the exact same workload with:
+
+```text
+stagger=0 ms
+stagger=100 ms
+```
+
+Interpretation:
+
+```text
+small stagger materially reduces peak pool/provider pressure and p95/errors
+→ H6 support
+
+little/no difference
+→ runner jitter likely not a first-fix requirement
+```
+
+The generic fake does not reproduce yfinance's real provider lock; this comparison isolates caller alignment.
+
 ### Live runner resume/warmup burst
+
+Current startup behavior is structurally:
+
+```text
+list_all_running
+→ start one asyncio task per run
+→ concurrent _build_session
+→ fresh warmup bars
+→ capture_factor_baseline after successful build
+→ first poll
+```
+
+Record only if we later run a seeded paper integration scenario:
 
 ```text
 Persisted running runs resumed:
@@ -253,12 +379,13 @@ Timeframe distribution:
 Warmup bars setting:
 Fresh backfills started during restart:
 Peak overlap:
+Baseline source per run: lineage/environment
 Concurrent factor baseline captures:
 Did cold macro requests overlap?:
 Data-service effect:
 ```
 
-This scenario represents a natural current thundering-herd path: startup resumes persisted running runs and each build performs fresh warmup; successful builds can then capture factor baselines from independent runner tasks.
+`29-runner-resume-factor-burst-shape.md` defines the exact lineage/environment distinction; do not claim every resumed run triggers all 18 FRED series.
 
 ### Same-key backfill duplication check
 
@@ -270,18 +397,77 @@ Dashboard coalescing observed?:
 Cross-service duplication observed?:
 ```
 
-### Mixed load
+### Mixed M1/M2/M3
+
+Use `39-mixed-workload-harness.md`.
+
+Common configuration:
 
 ```text
-Exact workload:
+Data workers:
+Factor workers:
+Fake venues:
+Fake provider mode/delay:
+Fake bars/fetch:
+Factor concurrency:
+Runner count:
+Health/OpenAPI probe count:
+```
+
+#### M1 — cold same-symbol factor + aligned runner
+
+```text
+factor_symbol_mode=same
+runner_stagger_ms=0
+Factor outcomes:
+Runner outcomes:
+Health outcomes:
+OpenAPI outcomes:
+Data/provider request deltas:
+Peak provider active:
+Peak pool waiting:
+Pool available min:
+p95/p99:
 First resource to degrade:
-First error/result class:
-Latency curve:
+```
+
+#### M2 — cold unique factor price keys + aligned runner
+
+```text
+factor_symbol_mode=unique
+runner_stagger_ms=0
+Same metrics:
+Delta vs M1:
+```
+
+M2 reduces whole-score same-key H11 overlap while retaining shared macro/date H8 potential.
+
+#### M3 — cold same-symbol factor + staggered runner
+
+```text
+factor_symbol_mode=same
+runner_stagger_ms=100
+Same metrics:
+Delta vs M1:
+```
+
+M3 tests H6 while holding the cold factor shape constant.
+
+### Mixed interpretation
+
+```text
+Strongest first constrained resource:
+First client-visible failure/result class:
 DATA_SERVICE_UNREACHABLE count:
+Runner GET /bars failures:
+Health failures:
+OpenAPI failures:
 Zero-row/no-progress backfills:
 Macro unique keys vs actual calls:
 Provider work surviving caller timeouts?:
 ```
+
+If OpenAPI survives while health/factor/runner DB-backed paths degrade, the evidence points away from generic event-loop death and toward DB-backed capacity/resource ordering.
 
 ---
 
@@ -292,15 +478,20 @@ Provider work surviving caller timeouts?:
 | data CPU | TBD | TBD | TBD |
 | data memory | TBD | TBD | TBD |
 | factor CPU | TBD | TBD | TBD |
-| DB connections checked out / inferred | TBD | TBD | TBD |
+| DB pool size | TBD | TBD | TBD |
+| DB pool available | TBD | TBD | TBD |
+| DB requests waiting | TBD | TBD | TBD |
+| DB queued cumulative delta | TBD | TBD | TBD |
+| DB wait ms cumulative delta | TBD | TBD | TBD |
 | DB `idle in transaction` | TBD | TBD | TBD |
-| DB pool waits/timeouts | TBD | TBD | TBD |
 | provider calls in flight | TBD | TBD | TBD |
 | provider calls cancelled | TBD | TBD | TBD |
-| provider queue depth/wait | TBD | TBD | TBD |
+| provider thread work active | TBD | TBD | TBD |
+| backfill HTTP in-flight | TBD | TBD | TBD |
+| bars HTTP in-flight | TBD | TBD | TBD |
 | client connections/sockets | TBD | TBD | TBD |
 | macro unique keys | TBD | TBD | TBD |
-| macro actual fetches | TBD | TBD | TBD |
+| macro actual same-key fetches | TBD | TBD | TBD |
 
 ---
 
@@ -329,6 +520,7 @@ Current static values:
 ```text
 server DB pool checkout timeout ≈ 30s
 factor GET HTTP timeout          ≈ 30s
+paper/factor-client outer timeout ≈ 30s in several paths
 ```
 
 If the same capacity event sometimes yields HTTP 500 and sometimes caller `ReadTimeout`, preserve both; do not assume they are unrelated until trace/timing evidence says so.
@@ -350,7 +542,7 @@ Questions:
 
 ```text
 Does sustained slowness convert one logical read into multiple physical requests because the
-30s client timeout is reached?
+client deadline is reached?
 
 If yes, do retries replace cancelled work or overlap older work that remains active?
 ```
@@ -366,9 +558,11 @@ If yes, do retries replace cancelled work or overlap older work that remains act
 - [ ] H4: duplicate same-key backfill work outside dashboard is material
 - [ ] H5: one provider monopolizes capacity
 - [ ] H6: live-runner synchronization/resume burst materially contributes
-- [ ] H7: event-loop/thread-pool saturation is primary
+- [ ] H7: event-loop saturation is primary
 - [ ] H8: cold macro cache stampede materially duplicates same-key factor→data work
 - [ ] H9: timed-out clients leave older server/provider work active long enough to overlap retries/new requests
+- [ ] H10: shared/default executor contention is materially involved for thread-backed providers
+- [ ] H11: whole live-score cold cache stampede materially duplicates main data work
 
 Evidence:
 
