@@ -83,6 +83,7 @@ Faysk/inalpha
 | `57-pre-runtime-tooling-audit.md` | Reviews the benchmark machinery itself, layered safety responsibilities, sustained-tool authority and syntax-validation limits before execution |
 | `58-windows-powershell-bootstrap.md` | PowerShell-native setup commands that preserve existing env files and prepare infra/benchmark DB without generating #107 load |
 | `59-issue107-change-lineage.md` | Timeline of mitigations that landed after #107 was opened, separating already-fixed historical causes from the remaining current-main capacity question |
+| `60-local-selfhost-smoke-findings.md` | Living record of Windows/self-host bootstrap bugs, LLM compatibility failures, observability noise and production-relevance assessments encountered during real local smoke testing |
 | `tools/test_backfill_pool_pressure_draft.py` | Contributor-only controlled 2-connection-pool baseline diagnostic; includes non-DB control |
 | `tools/test_candidate_a_regression_draft.py` | Post-Candidate-A property regression with pool=2, four simultaneous provider waits and background scheduler isolation |
 | `tools/test_macro_cache_stampede_draft.py` | Pure factor-unit diagnostic proving whether concurrent cold same-key macro requests coalesce or duplicate work |
