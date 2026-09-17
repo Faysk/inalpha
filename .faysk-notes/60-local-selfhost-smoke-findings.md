@@ -107,55 +107,56 @@ The second option should remain provider-specific; generic `custom` should not s
 
 This isolates the failure above basic connectivity, model loading, credential validation, and non-streaming tool calling.
 
-### Isolation update — raw SSE control passed
+### Isolation update — raw SSE controls passed
 
-A raw `stream:true` request was executed from inside the same Mastra container directly against Ollama's OpenAI-compatible `/v1/chat/completions` endpoint, without Mastra/AI-SDK/AG-UI adaptation. The response was `HTTP 200`, `Content-Type: text/event-stream`, emitted reasoning chunks followed by normal content chunks, then produced a terminal chunk with `finish_reason="stop"`, followed by `data: [DONE]`, and the response body closed cleanly.
+Two raw `stream:true` controls were executed from inside the same Mastra container directly against Ollama's OpenAI-compatible `/v1/chat/completions` endpoint, without Mastra/AI-SDK/AG-UI adaptation.
 
-That means the **basic no-tools Ollama OpenAI-compatible SSE framing and termination path is healthy in this environment**. The original `INCOMPLETE_STREAM` therefore should no longer be described as a generic inability of Ollama to stream. The remaining failure boundary is narrower: tool-capable streaming and/or one of the adapters above the raw HTTP stream.
+1. **No tools advertised:** response was `HTTP 200`, `Content-Type: text/event-stream`, emitted separate `reasoning` deltas followed by normal `content` deltas, then a terminal chunk with `finish_reason="stop"`, `data: [DONE]`, and a clean body close.
+2. **A tool advertised but explicitly not invoked:** the same healthy termination occurred: `HTTP 200`, SSE content, reasoning + content deltas, `finish_reason="stop"`, `data: [DONE]`, and a clean body close.
 
-The installed orchestration dependency was also confirmed at runtime as:
+The second control is important because Inalpha advertises many tools even for trivial chat. It shows that **merely having `tools` in the request is not sufficient to reproduce the incomplete stream at the raw Ollama protocol layer**.
+
+The installed orchestration dependency was confirmed at runtime as:
 
 ```text
 @ai-sdk/openai-compatible@2.0.48
 ```
 
-**What this rules out:**
+**What this now rules out in this environment:**
 
 - Docker-to-Ollama connectivity;
-- plain OpenAI-compatible streaming transport failure;
-- missing terminal `finish_reason` in a simple no-tools stream;
-- missing `[DONE]` in a simple no-tools stream;
-- premature socket/body closure in that control case.
+- generic OpenAI-compatible SSE transport failure;
+- missing terminal `finish_reason` for a normal text response;
+- missing `[DONE]` for a normal text response;
+- premature body/socket close in the controls tested;
+- the presence of a `tools` array by itself as the raw-protocol trigger.
 
 **What it does not yet rule out:**
 
-- Ollama streaming behavior when `tools` are present;
+- raw Ollama streaming when the model actually emits a tool call;
 - streamed tool-call delta shape/assembly;
 - handling of Ollama's separate `reasoning` deltas by `@ai-sdk/openai-compatible`;
-- AI SDK stream completion semantics;
+- AI SDK stream completion semantics even when raw SSE is valid;
 - Mastra stream adaptation;
 - AG-UI/CopilotKit completion-event handling.
 
 **Current suspects, not conclusions:**
 
-- tool-capable Ollama OpenAI-compatible streaming shape;
-- `@ai-sdk/openai-compatible` 2.0.48 streaming/tool-call/reasoning handling;
+- actual streamed tool-call handling rather than tool advertisement alone;
+- `@ai-sdk/openai-compatible` 2.0.48 handling of streamed tool calls and/or reasoning deltas;
 - Mastra stream adaptation;
 - AG-UI/CopilotKit stream adaptation/termination.
 
-The request advertises many tools even for a trivial chat prompt, so the tool-capable streaming path is in play even when the model does not need to call a tool.
-
 **Next isolation ladder:**
 
-1. raw `stream:true` OpenAI-compatible request with tools present but a prompt that should not invoke a tool;
-2. raw streamed request that deliberately invokes one tool and inspect tool-call deltas plus termination;
-3. minimal `@ai-sdk/openai-compatible` streaming call without Mastra;
-4. minimal Mastra stream without AG-UI/CopilotKit;
-5. full dashboard path.
+1. raw streamed request that deliberately invokes one tool; inspect every `tool_calls` delta, final `finish_reason`, `[DONE]`, and close;
+2. minimal `@ai-sdk/openai-compatible` streaming call without Mastra, first text-only and then real tool-call;
+3. minimal Mastra stream without AG-UI/CopilotKit;
+4. full dashboard path.
 
 Only after the failing layer is identified should we propose a dependency bump, adapter workaround, or Ollama-specific change.
 
-**Production relevance:** definite for self-host/custom Ollama users. Potentially broader if another OpenAI-compatible custom provider produces the same stream shape. Not evidence of a production issue for official managed providers yet.
+**Production relevance:** definite for self-host/custom Ollama users because the full product path is currently unusable in this tested configuration. Potentially broader if another OpenAI-compatible custom provider produces the same adapter-level failure. Not evidence of a production issue for official managed providers yet.
 
 ---
 
@@ -242,6 +243,7 @@ These are useful because they prevent future investigation from re-opening layer
 - direct non-streaming completion works;
 - direct tool-calling works with a valid function call;
 - direct raw no-tools SSE streaming completes with `finish_reason=stop`, `[DONE]`, and a clean body close;
+- direct raw SSE with a `tools` array but no actual invocation also completes with `finish_reason=stop`, `[DONE]`, and a clean body close;
 - per-user encrypted LLM config is saved, activated, decrypted, and forwarded into the failing inference request.
 
 ---
