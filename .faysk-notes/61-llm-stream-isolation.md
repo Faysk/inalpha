@@ -42,8 +42,9 @@ The following layers already passed:
 7. Direct `@ai-sdk/openai-compatible@2.0.48` `model.doStream()` text-only succeeds and cleanly produces `stream-start`, `response-metadata`, `reasoning-start`/`reasoning-delta`/`reasoning-end`, `text-start`/`text-delta`/`text-end`, then `finish` with unified/raw `stop`.
 8. Direct AI-SDK `doStream()` with a tool advertised but not invoked also completes normally with reasoning events, one `txt-0` text part, and `finish` with unified/raw `stop`.
 9. Direct AI-SDK `doStream()` with a real tool call also completes normally: `tool-input-start` → `tool-input-delta` containing `{"symbol":"BTC"}` → `tool-input-end` → `tool-call`, then `finish` with unified `tool-calls` / raw `tool_calls`.
+10. Minimal Mastra `Agent.stream()` text-only also completes normally. Its `fullStream` contains `start`, `step-start`, reasoning events, `text-start`/`text-delta`/`text-end`, `step-finish`, and terminal `finish`. The final promises resolve as `text = "MASTRA STREAM OK"`, `finishReason = "stop"`, and a usage object.
 
-Therefore current evidence rules out generic Docker/Ollama connectivity, generic SSE framing failure, missing `[DONE]`, premature socket close, raw streamed tool-call termination, Ollama reasoning deltas by themselves, and the AI SDK 2.0.48 parser/adapter for the single-step text and single-step tool-call cases we exercised.
+Therefore current evidence rules out generic Docker/Ollama connectivity, generic SSE framing failure, missing `[DONE]`, premature socket close, raw streamed tool-call termination, Ollama reasoning deltas by themselves, the AI SDK 2.0.48 parser/adapter for the single-step text and single-step tool-call cases we exercised, and Mastra's basic text-only `Agent.stream()` path.
 
 ## AI SDK boundary
 
@@ -121,11 +122,42 @@ finish unified=tool-calls raw=tool_calls
 
 These controls materially move the fault boundary above the direct AI-SDK provider adapter for the cases tested.
 
+## Mastra boundary
+
+### Minimal Agent.stream text-only passed
+
+A minimal `@mastra/core` agent using the same `qwen3:8b` OpenAI-compatible model was exercised directly, bypassing AG-UI/CopilotKit and the dashboard.
+
+Observed `fullStream` shape:
+
+```text
+start
+step-start
+reasoning-start / reasoning-delta / reasoning-end
+text-start id=txt-0
+text-delta ...
+text-end id=txt-0
+step-finish reason=stop
+finish reason=stop
+```
+
+Final promises resolved normally:
+
+```text
+text= MASTRA STREAM OK
+finishReason= stop
+usage= {"totalTokens":0,"raw":{"inputTokens":{},"outputTokens":{}}}
+```
+
+This is strong evidence that Mastra's basic `Agent.stream()` text path is healthy with the exact local provider/model pair.
+
+One adjacent observation is worth tracking but is not the `INCOMPLETE_STREAM` root cause: Ollama's OpenAI-compatible token usage fields arrive empty in this path, so Mastra reports zero token counts. That may affect accounting/telemetry for local/custom providers, but it does not prevent stream completion.
+
 ## Relevant upstream AI SDK bug found
 
 Vercel AI SDK issue `vercel/ai#15789` documents a confirmed bug in `@ai-sdk/openai-compatible@2.0.48`: the adapter reused the synthetic text-part ID `txt-0` across separate text segments in a multi-step `text -> tool -> text` stream. The reporter observed the problem through Mastra's React adapter, and the issue was later classified/reproduced as a bug.
 
-Important limitation: **this is not proof that #15789 causes our `INCOMPLETE_STREAM`.** Our direct AI-SDK single-step controls all pass. The upstream bug concerns multi-step text/tool/text part identity and ordering, so it remains relevant only if a higher-level Mastra flow introduces multiple model steps or if later UI adaptation depends on these IDs.
+Important limitation: **this is not proof that #15789 causes our `INCOMPLETE_STREAM`.** Our direct AI-SDK single-step controls and Mastra text-only control all pass. The upstream bug concerns multi-step text/tool/text part identity and ordering, so it remains relevant only if a higher-level Mastra tool flow introduces multiple model steps or if later UI adaptation depends on these IDs.
 
 Also, upstream reproduction notes show the duplicate-ID behavior existed in later 2.0.x and even a later 3.0.x snapshot at the time of reproduction. Therefore a blind dependency bump is still not an evidence-based correction.
 
@@ -144,17 +176,21 @@ Ollama raw OpenAI-compatible SSE          PASS
   - tools advertised doStream             PASS
   - actual tool-call doStream             PASS
 
-Mastra Agent.stream adaptation            NEXT
+Mastra Agent.stream
+  - text-only                             PASS
+  - tool advertised, not used             NEXT
+  - real tool execution + continuation    NEXT
+
 AG-UI / CopilotKit adaptation             OPEN
 Dashboard                                 FAILS with INCOMPLETE_STREAM
 ```
 
 ## Next decision ladder
 
-1. Minimal `@mastra/core` `Agent.stream()` using the same OpenAI-compatible model, no tools, inspect `fullStream` and final promises.
-2. Minimal Mastra agent with one tool advertised but not used.
-3. Minimal Mastra agent with one real tool execution and continuation if supported by the local test.
-4. If Mastra is healthy, isolate the AG-UI/CopilotKit bridge and completion-event handling.
+1. Minimal Mastra `Agent.stream()` with one tool advertised but explicitly not used.
+2. Minimal Mastra `Agent.stream()` with one real tool execution and the post-tool continuation step.
+3. If those are healthy, isolate the AG-UI/CopilotKit bridge and its completion-event handling.
+4. If a Mastra tool-capable case fails, reduce that exact stream shape before touching product code.
 
 Do not modify production code or bump dependencies until the first failing layer is identified.
 
@@ -163,8 +199,9 @@ Do not modify production code or bump dependencies until the first failing layer
 - **Confirmed:** the tested local/private self-host path using Ollama through `Custom` is currently unusable end-to-end.
 - **Possible broader relevance:** any deployment using an OpenAI-compatible custom provider plus the same Mastra/UI stack could encounter a higher-layer adapter problem.
 - **Not established:** managed-provider production paths are affected.
-- **Narrowed finding:** the raw provider and direct AI-SDK single-step streams are healthy, so current evidence points above those layers.
+- **Narrowed finding:** raw provider streaming, direct AI-SDK single-step streaming, and Mastra text-only streaming are healthy, so current evidence points to Mastra tool-capable multi-step behavior or a later AG-UI/CopilotKit/dashboard bridge.
+- **Adjacent telemetry note:** token usage is currently observed as zero/empty for this Ollama-compatible path; this is a separate accounting/observability concern, not a stream-completion failure.
 
 ## Maintainer presentation rule
 
-If surfaced later, present this as a layered compatibility finding with positive controls, not as "Ollama is broken" or "AI SDK streaming is broken". The useful evidence is that the exact provider/model/AI-SDK combination completes cleanly in direct controls while the full product path still ends as `INCOMPLETE_STREAM`.
+If surfaced later, present this as a layered compatibility finding with positive controls, not as "Ollama is broken", "AI SDK streaming is broken", or "Mastra is broken". The useful evidence is that the exact provider/model/AI-SDK combination and basic Mastra stream all complete cleanly while the full product path still ends as `INCOMPLETE_STREAM`.
