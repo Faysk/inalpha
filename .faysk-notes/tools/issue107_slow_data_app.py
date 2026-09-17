@@ -221,6 +221,54 @@ def _pool_state() -> dict[str, int]:
     return out
 
 
+def _align_fake_start(since: datetime, timeframe: str, step_s: int) -> datetime:
+    """Return the first deterministic candle bucket at or after since.
+
+    Real OHLCV/FRED providers return timeframe-bucketed timestamps. Using the request's exact
+    microsecond-level since value would make concurrent same-key contributor requests generate
+    different synthetic candle grids, inflating persisted rows and bars_used. Calendar buckets are
+    used for weekly/monthly/quarterly/yearly frames; fixed-second frames use an epoch ceil.
+    """
+    start = since if since.tzinfo is not None else since.replace(tzinfo=UTC)
+    start = start.astimezone(UTC)
+
+    if timeframe in {"1w", "1wk"}:
+        monday = (start - timedelta(days=start.weekday())).replace(
+            hour=0, minute=0, second=0, microsecond=0
+        )
+        return monday if start == monday else monday + timedelta(days=7)
+
+    if timeframe == "1mo":
+        month_start = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+        if start == month_start:
+            return month_start
+        year = month_start.year + (1 if month_start.month == 12 else 0)
+        month = 1 if month_start.month == 12 else month_start.month + 1
+        return month_start.replace(year=year, month=month)
+
+    if timeframe == "1q":
+        quarter_month = ((start.month - 1) // 3) * 3 + 1
+        q_start = start.replace(
+            month=quarter_month, day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+        if start == q_start:
+            return q_start
+        next_month = quarter_month + 3
+        year = start.year + (1 if next_month > 12 else 0)
+        month = next_month - 12 if next_month > 12 else next_month
+        return q_start.replace(year=year, month=month)
+
+    if timeframe == "1y":
+        year_start = start.replace(month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
+        return year_start if start == year_start else year_start.replace(year=year_start.year + 1)
+
+    epoch = datetime(1970, 1, 1, tzinfo=UTC)
+    elapsed = (start - epoch).total_seconds()
+    bucket = int(elapsed // step_s)
+    aligned = epoch + timedelta(seconds=bucket * step_s)
+    return aligned if aligned == start else aligned + timedelta(seconds=step_s)
+
+
 class BlockedIssue107Connector:
     """Fail closed for any registered OHLCV venue not explicitly replaced by a fake."""
 
@@ -299,7 +347,7 @@ class SlowIssue107Connector:
 
             configured = int(os.environ.get("ISSUE107_FAKE_BARS_PER_FETCH", "1"))
             count = max(1, min(limit, configured))
-            start = since if since.tzinfo is not None else since.replace(tzinfo=UTC)
+            start = _align_fake_start(since, timeframe, step_s)
             rows = [
                 (
                     start + timedelta(seconds=step_s * idx),
@@ -389,6 +437,7 @@ async def _issue107_state() -> dict[str, int | str]:
         "blocked_venues": ",".join(_blocked_venues),
         "snapshot_scheduler_forced_disabled": 1,
         "fake_bars_per_fetch": int(os.environ.get("ISSUE107_FAKE_BARS_PER_FETCH", "1")),
+        "fake_time_alignment": "ceil_to_timeframe_bucket",
         "active": _provider_active,
         "started": _provider_started,
         "completed": _provider_completed,
