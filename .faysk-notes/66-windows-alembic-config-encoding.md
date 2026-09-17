@@ -40,6 +40,18 @@ For the local benchmark, create a temporary ASCII-only copy of the same config b
 
 This preserves all functional Alembic settings while avoiding the locale decode failure and leaves `git status` clean.
 
+## Workaround result
+
+The temporary ASCII-only config workaround was executed successfully on the benchmark host. Alembic advanced the dedicated `inalpha_issue107` database from the empty state through the current head (`0043_waitlist`). A direct PostgreSQL verification then returned:
+
+```text
+inalpha_issue107|bars
+```
+
+confirming that `public.bars` exists in the dedicated benchmark database. The temporary config file was removed in the `finally` block and `git status --short` remained empty afterward.
+
+This closes the migration bootstrap blocker for #107 without changing tracked project files.
+
 ## Follow-up
 
 If a future contribution targets Windows bootstrap portability, possible project-level fixes should be evaluated separately (for example making the config consumable without locale-dependent decoding or changing the bootstrap invocation). Do not mix that work into the #107 saturation PR.
