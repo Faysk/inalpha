@@ -39,10 +39,11 @@ The following layers already passed:
 4. Raw SSE, no tools: `HTTP 200`, `text/event-stream`, terminal `finish_reason=stop`, `[DONE]`, clean close.
 5. Raw SSE, tools advertised but not invoked: same healthy termination.
 6. Raw SSE, real forced tool call: Ollama emits `get_price({"symbol":"BTC"})`, then `finish_reason=tool_calls`, `[DONE]`, clean close.
+7. Direct `@ai-sdk/openai-compatible@2.0.48` `model.doStream()` text-only succeeds and cleanly produces `stream-start`, `response-metadata`, `reasoning-start`/`reasoning-delta`/`reasoning-end`, `text-start`/`text-delta`/`text-end`, then `finish` with unified/raw `stop`.
 
-Therefore current evidence rules out generic Docker/Ollama connectivity, generic SSE framing failure, missing `[DONE]`, premature socket close, and raw streamed tool-call termination as the reproducer.
+Therefore current evidence rules out generic Docker/Ollama connectivity, generic SSE framing failure, missing `[DONE]`, premature socket close, raw streamed tool-call termination, and the AI SDK's basic text/reasoning stream parsing as the reproducer.
 
-## AI SDK boundary confirmed
+## AI SDK boundary
 
 Runtime introspection of the exact installed provider produced:
 
@@ -71,7 +72,30 @@ proto= [
 ]
 ```
 
-This confirms that the installed `@ai-sdk/openai-compatible@2.0.48` object is a LanguageModel V3 implementation exposing `doStream` directly. The next isolation step is therefore a minimal direct `doStream()` test inside the Mastra container, bypassing Mastra/AG-UI/CopilotKit while retaining the AI SDK parser/adapter.
+This confirms that the installed `@ai-sdk/openai-compatible@2.0.48` object is a LanguageModel V3 implementation exposing `doStream` directly.
+
+### AI SDK text-only control passed
+
+A direct `model.doStream()` call was then executed inside the Mastra container while bypassing Mastra/AG-UI/CopilotKit. The adapter parsed Ollama's separate `reasoning` field into a normal V3 reasoning part, closed that part correctly, opened a single text part `txt-0`, emitted the requested text, closed the text part, and emitted a final `finish` event:
+
+```text
+stream-start
+response-metadata
+reasoning-start id=reasoning-0
+reasoning-delta ...
+reasoning-end id=reasoning-0
+text-start id=txt-0
+text-delta id=txt-0 "AI"
+text-delta id=txt-0 " SDK"
+text-delta id=txt-0 " STREAM"
+text-delta id=txt-0 " OK"
+text-end id=txt-0
+finish unified=stop raw=stop
+```
+
+This is important because it rules out **Ollama reasoning deltas by themselves** as sufficient to trigger the product failure. It also shows that `txt-0` is perfectly normal for a single text segment; the known duplicate-ID concern only becomes relevant when separate text segments exist across tool steps.
+
+The next AI SDK boundary tests are therefore tool-capable `doStream()` calls: first a tool advertised but not invoked, then an actual streamed tool call.
 
 ## Relevant upstream AI SDK bug found
 
@@ -91,9 +115,13 @@ Conclusion: record #15789 as a related upstream bug and diagnostic clue, not as 
 Ollama raw OpenAI-compatible SSE          PASS
   - plain text                            PASS
   - tools advertised                     PASS
-  - actual streamed tool call             PASS
+  - actual streamed tool call            PASS
 
-@ai-sdk/openai-compatible 2.0.48          NEXT
+@ai-sdk/openai-compatible 2.0.48
+  - text + reasoning doStream             PASS
+  - tools advertised doStream             NEXT
+  - actual tool-call doStream             NEXT
+
 Mastra stream adaptation                  OPEN
 AG-UI / CopilotKit adaptation             OPEN
 Dashboard                                 FAILS with INCOMPLETE_STREAM
@@ -101,11 +129,10 @@ Dashboard                                 FAILS with INCOMPLETE_STREAM
 
 ## Next decision ladder
 
-1. Direct `model.doStream()` through `@ai-sdk/openai-compatible@2.0.48`, text-only.
-2. Direct `model.doStream()` with a tool advertised but not invoked.
-3. Direct `model.doStream()` with a real tool call.
-4. If AI SDK output is healthy, test minimal Mastra streaming without AG-UI/CopilotKit.
-5. If Mastra is healthy, isolate the AG-UI/CopilotKit bridge and completion event handling.
+1. Direct `model.doStream()` with a tool advertised but not invoked.
+2. Direct `model.doStream()` with a real tool call.
+3. If AI SDK output is healthy, test minimal Mastra streaming without AG-UI/CopilotKit.
+4. If Mastra is healthy, isolate the AG-UI/CopilotKit bridge and completion-event handling.
 
 Do not modify production code or bump dependencies until the first failing layer is identified.
 
@@ -117,4 +144,4 @@ Do not modify production code or bump dependencies until the first failing layer
 
 ## Maintainer presentation rule
 
-If surfaced later, present this as a layered compatibility finding with positive controls, not as "Ollama is broken" or "Inalpha streaming is broken". The useful evidence is precisely that the raw provider stream is valid and the failure appears only after higher-level adaptation.
+If surfaced later, present this as a layered compatibility finding with positive controls, not as "Ollama is broken" or "Inalpha streaming is broken". The useful evidence is precisely that raw provider streaming and basic AI SDK parsing are healthy while the failure appears only later in the full product path.
