@@ -186,6 +186,10 @@ jobs:
       - name: Ruff
         working-directory: services/${{ matrix.service }}
         run: uv run ruff check .
+      - name: Backfill admission regression tests
+        if: matrix.service == 'data'
+        working-directory: services/data
+        run: uv run pytest -q tests/test_backfill_admission.py
       - name: Mypy (best-effort, allow failure)
         working-directory: services/${{ matrix.service }}
         run: uv run mypy . || true

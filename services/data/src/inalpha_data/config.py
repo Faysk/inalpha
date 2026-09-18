@@ -35,6 +35,14 @@ class DataSettings(BaseSettings):
 
     data_service_port: int = Field(default=8001, alias="DATA_SERVICE_PORT")
 
+    # Per-process admission limit for upstream bar fetches. Set to 0 to disable.
+    backfill_max_concurrency: int = Field(
+        default=8,
+        ge=0,
+        alias="BACKFILL_MAX_CONCURRENCY",
+    )
+    """Maximum concurrent ``/backfill/bars`` provider fetches in one worker process."""
+
     # --- web_search 并发/超时治理（避免 backend="auto" 长尾把事件循环拖死）---
     web_search_timeout_s: int = Field(default=8, alias="WEB_SEARCH_TIMEOUT_S")
     """ddgs 单引擎 HTTP 超时（秒）。原默认 15s，叠多引擎可到 30s+，收紧到 8s 砍长尾。"""

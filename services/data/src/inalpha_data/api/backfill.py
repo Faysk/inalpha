@@ -5,15 +5,17 @@ D-9 起多 venue：按 ``req.venue`` 从注册表取 connector（binance / alpac
 
 from __future__ import annotations
 
-from datetime import timedelta
-from typing import Annotated
+import asyncio
+from datetime import datetime, timedelta
+from typing import Annotated, Any
 
 from fastapi import APIRouter, Depends
 from inalpha_shared import get_logger
 from inalpha_shared.auth import User, get_current_user
-from inalpha_shared.db import DBConn
+from inalpha_shared.db import get_conn
 from inalpha_shared.errors import InalphaError, ValidationError
 
+from ..config import get_data_settings
 from ..connectors import Connector, get_connector_for_venue, list_registered_venues
 from ..connectors.alpaca import TIMEFRAME_SECONDS as ALPACA_TIMEFRAME_SECONDS
 from ..connectors.binance import TIMEFRAME_SECONDS as BINANCE_TIMEFRAME_SECONDS
@@ -42,6 +44,76 @@ _MINUTE_LOOKBACK_LIMITS = {
     "1h": 60,  # 60 天 = 720 条
 }
 
+
+# Bound expensive upstream bar fetches per worker. Production currently runs two
+# data workers, so the container-wide peak can be roughly twice this value.
+_BACKFILL_GATE: asyncio.Semaphore | None = None
+_BACKFILL_GATE_LIMIT: int | None = None
+_BACKFILL_FETCH_TASKS: set[asyncio.Task[Any]] = set()
+
+
+def _get_backfill_gate() -> asyncio.Semaphore | None:
+    global _BACKFILL_GATE, _BACKFILL_GATE_LIMIT
+
+    limit = get_data_settings().backfill_max_concurrency
+    if limit <= 0:
+        _BACKFILL_GATE = None
+        _BACKFILL_GATE_LIMIT = limit
+        return None
+    if _BACKFILL_GATE is None or _BACKFILL_GATE_LIMIT != limit:
+        _BACKFILL_GATE = asyncio.Semaphore(limit)
+        _BACKFILL_GATE_LIMIT = limit
+    return _BACKFILL_GATE
+
+
+def _consume_backfill_fetch_task(task: asyncio.Task[Any]) -> None:
+    _BACKFILL_FETCH_TASKS.discard(task)
+    if not task.cancelled():
+        task.exception()
+
+
+async def _fetch_bars_with_admission(
+    connector: Connector,
+    *,
+    symbol: str,
+    timeframe: str,
+    since: datetime,
+    limit: int,
+) -> list[tuple[datetime, float, float, float, float, float]]:
+    gate = _get_backfill_gate()
+    if gate is None:
+        return await connector.fetch_bars(
+            symbol=symbol,
+            timeframe=timeframe,
+            since=since,
+            limit=limit,
+        )
+
+    # A caller cancelled before admission should leave the queue immediately.
+    await gate.acquire()
+
+    async def _run() -> list[tuple[datetime, float, float, float, float, float]]:
+        try:
+            return await connector.fetch_bars(
+                symbol=symbol,
+                timeframe=timeframe,
+                since=since,
+                limit=limit,
+            )
+        finally:
+            gate.release()
+
+    try:
+        task = asyncio.create_task(_run())
+    except BaseException:
+        gate.release()
+        raise
+
+    # Some connectors use asyncio.to_thread(). Once admitted, keep the work alive
+    # after caller cancellation so it keeps owning the permit until provider work exits.
+    _BACKFILL_FETCH_TASKS.add(task)
+    task.add_done_callback(_consume_backfill_fetch_task)
+    return await asyncio.shield(task)
 
 class BarsUpstreamUnavailableError(InalphaError):
     """外部 K 线源不可用，避免把网络故障伪装成成功的空结果。"""
@@ -73,7 +145,6 @@ _VENUE_TIMEFRAME_SECONDS: dict[str, dict[str, int]] = {
 @router.post("/backfill/bars", response_model=BackfillResponse)
 async def backfill_bars(
     req: BackfillRequest,
-    db: DBConn,
     _user: Annotated[User, Depends(get_current_user)],
 ) -> BackfillResponse:
     """从外部 venue 拉指定时段的 K 线，幂等写入 TimescaleDB。
@@ -158,9 +229,11 @@ async def backfill_bars(
     # 起点取已缓存 max(ts)（重拉最后一根，覆盖落库时仍未收盘的半根 candle），
     # 但不早于请求的 from_ts；空缓存则从 from_ts 全量。
     # 注：仅按 max(ts) 续拉，中间空洞（非连续缓存，罕见）不会回补；需要时显式重拉窗口。
-    cached_latest = await latest_bar_ts(
-        db, effective_venue, effective_symbol, req.timeframe, upto=req.to_ts
-    )
+    # Keep DB leases scoped to short database operations. Provider I/O can be slow.
+    async with get_conn() as db:
+        cached_latest = await latest_bar_ts(
+            db, effective_venue, effective_symbol, req.timeframe, upto=req.to_ts
+        )
     if cached_latest is not None and cached_latest > effective_from_ts:
         cursor = cached_latest
         _logger.info(
@@ -178,7 +251,8 @@ async def backfill_bars(
 
     while cursor < req.to_ts:
         try:
-            bars = await connector.fetch_bars(
+            bars = await _fetch_bars_with_admission(
+                connector,
                 symbol=effective_symbol,
                 timeframe=req.timeframe,
                 since=cursor,
@@ -225,7 +299,10 @@ async def backfill_bars(
         if not bars:
             break
 
-        n = await insert_bars(db, effective_venue, effective_symbol, req.timeframe, bars)
+        async with get_conn() as db:
+            n = await insert_bars(
+                db, effective_venue, effective_symbol, req.timeframe, bars
+            )
         fetched_total += len(bars)
         inserted_total += n
 
